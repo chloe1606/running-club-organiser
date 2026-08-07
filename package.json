@@ -1,0 +1,33 @@
+{
+  "name": "running-club-organiser",
+  "version": "1.0.0",
+  "description": "A web-based booking system for our weekly Tuesday evening club runs, built with Next.js and using Google Sheets as the backend database.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "googleapis": "^174.0.1",
+    "next": "^16.3.0",
+    "next-auth": "^4.24.15",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
