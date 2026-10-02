@@ -20,6 +20,12 @@ export interface Group extends Versioned {
   runId: string;
   number: number;
   paceLabel: string;
+  distanceLabel?: string;
+  name?: string;
+  leaderId?: string;
+  sweeperId?: string;
+  routeDescription?: string;
+  routeNeedsReview?: boolean;
   capacity: number;
 }
 
@@ -55,14 +61,19 @@ export function activeBookings(bookings: Booking[]) {
   return bookings.filter((booking) => booking.status !== "cancelled");
 }
 
-export function confirmedCount(groupId: string, bookings: Booking[]): number {
-  return bookings.filter(
+export function confirmedCount(groupId: string, bookings: Booking[], group?: Group): number {
+  const occupants = new Set(bookings.filter(
     (booking) => booking.groupId === groupId && booking.status === "confirmed",
-  ).length;
+  ).map((booking) => booking.memberId));
+  if (group?.id === groupId) {
+    if (group.leaderId) occupants.add(group.leaderId);
+    if (group.sweeperId) occupants.add(group.sweeperId);
+  }
+  return occupants.size;
 }
 
 export function nextBookingStatus(group: Group, bookings: Booking[]): BookingStatus {
-  return confirmedCount(group.id, bookings) < group.capacity
+  return confirmedCount(group.id, bookings, group) < Math.min(group.capacity, 19)
     ? "confirmed"
     : "waitlisted";
 }
@@ -98,10 +109,13 @@ export function promoteFirstWaitlisted(
       (booking) =>
         booking.groupId === groupId && booking.status === "waitlisted",
     )
-    .sort((a, b) => a.bookedAt.localeCompare(b.bookedAt))[0];
+    .sort((a, b) => new Date(a.bookedAt).getTime() - new Date(b.bookedAt).getTime() || a.id.localeCompare(b.id))[0];
 }
 
 export function assertCanPublish(run: Run, runs: Run[], now: Date) {
+  if (run.status !== "draft" || new Date(run.startsAt) <= now) {
+    throw new BookingRuleError("Only future draft runs can be published.");
+  }
   const hasPublishedFutureRun = runs.some(
     (candidate) =>
       candidate.id !== run.id &&

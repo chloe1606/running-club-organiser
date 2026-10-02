@@ -1,199 +1,374 @@
 /**
- * Deploy this project as a Web App that only the Next.js server can call.
- * Store GATEWAY_SECRET in Apps Script Properties, not in this source file.
+ * Server-only gateway. Deploy as the spreadsheet owner's web app; never expose
+ * GATEWAY_SECRET or this endpoint to browsers. Auth operations share this lock.
  */
 function doPost(event) {
   try {
     const request = JSON.parse(event.postData.contents);
-    if (request.secret !== PropertiesService.getScriptProperties().getProperty("GATEWAY_SECRET")) {
+    const secret = PropertiesService.getScriptProperties().getProperty("GATEWAY_SECRET");
+    if (!secret || typeof request.secret !== "string" || request.secret !== secret) {
       return response_(false, "UNAUTHORIZED", "Invalid gateway credentials.");
     }
     return withLock_(() => dispatch_(request));
   } catch (error) {
-    console.error(error);
-    return response_(false, "INTERNAL_ERROR", error.message || "Unexpected gateway error.");
+    // Do not log request bodies, tokens, credentials, or upstream exceptions.
+    return response_(false, error.platformCode || "INTERNAL_ERROR",
+      error.platformCode ? error.message : "The gateway could not complete this request.");
   }
 }
 
 function dispatch_(request) {
-  switch (request.operation) {
-    case "book":
-      return book_(request);
-    case "publishRun":
-      return publishRun_(request);
-    case "cancelRun":
-      return cancelRun_(request);
-    case "archiveRun":
-      return archiveRun_(request);
-    default:
-      return response_(false, "UNKNOWN_OPERATION", "Unsupported operation.");
+  if (typeof request.operation !== "string") fail_("INVALID_REQUEST", "Operation is required.");
+  if (/^auth/.test(request.operation)) {
+    if (typeof authDispatch_ !== "function") fail_("NOT_CONFIGURED", "Authentication is not configured.");
+    return authDispatch_(request);
+  }
+  let state = loadPlatformState_();
+  if (request.operation === "snapshot") {
+    if (state.schemaVersion) repairProjections_(state);
+    return response_(true, null, null, snapshotFor_(state.snapshot, request.email));
+  }
+  if (!state.schemaVersion) fail_("MIGRATION_REQUIRED", "An administrator must back up and migrate the legacy workbook before writes.");
+  repairProjections_(state);
+  const email = normalizeEmail_(request.email);
+  const actor = state.snapshot.members.find((member) => member.email === email && member.active);
+  if (!actor) fail_("FORBIDDEN", "An active club membership is required.");
+  if (typeof request.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.requestId)) {
+    fail_("INVALID_REQUEST", "A stable UUID requestId is required.");
+  }
+  const fingerprint = requestFingerprint_(request);
+  const receipt = state.receipts.find((entry) => entry.requestId === request.requestId);
+  if (receipt) {
+    if (receipt.actorId !== actor.id || receipt.fingerprint !== fingerprint) {
+      fail_("REQUEST_ID_REUSED", "This requestId was already used for a different request.");
+    }
+    return response_(true, null, null, receipt.result);
+  }
+  // Mutate a detached candidate. Rejections cannot remove an existing booking.
+  state = JSON.parse(JSON.stringify(state));
+  const result = mutatePlatform_(state.snapshot, request, actor, new Date(), state.groupDefinitions);
+  validatePlatform_(state.snapshot);
+  state.receipts.push({ requestId: request.requestId, actorId: actor.id, fingerprint, result });
+  commitPlatformState_(state);
+  const projected = repairProjections_(state);
+  return response_(true, null, null, Object.assign({}, result, { projectionPending: !projected }));
+}
+
+function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
+  const operation = request.operation;
+  const admin = actor.roles.includes("admin");
+  const adminOperations = ["createWeek", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner"];
+  if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
+  let run;
+  let group;
+  let result = {};
+  const touched = new Set();
+  const auditContext = { actorId: actor.id, requestId: request.requestId, at: now.toISOString() };
+  if (operation === "createWeek") {
+    const schedule = platformSchedule_(request.date, snapshot.config, now);
+    if (snapshot.weeks.some((week) => clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) === request.date)) {
+      fail_("WEEK_EXISTS", "A run already exists for this club-local date.");
+    }
+    run = Object.assign({ id: "run-" + request.date, status: "draft", version: 1 }, schedule);
+    let sourceGroups = [];
+    if (request.copyFromRunId) {
+      if (!snapshot.weeks.some((week) => week.id === request.copyFromRunId)) fail_("NOT_FOUND", "The source week does not exist.");
+      sourceGroups = snapshot.groups.filter((entry) => entry.runId === request.copyFromRunId);
+      if (sourceGroups.length !== 13) fail_("INVALID_GROUPS", "The source week must have exactly thirteen groups.");
+    }
+    snapshot.weeks.push(run);
+    for (let number = 1; number <= 13; number++) {
+      const source = sourceGroups.find((entry) => entry.number === number);
+      const definition = groupDefinitions.find((entry) => entry.number === number);
+      snapshot.groups.push({
+        id: run.id + "-" + definition.id, runId: run.id, number, version: 1,
+        name: definition.name || "Group " + number,
+        distanceLabel: definition.distanceLabel,
+        paceLabel: definition.paceLabel,
+        capacity: 19,
+        routeDescription: source && source.routeDescription || "",
+        routeNeedsReview: !!(source && source.routeDescription),
+      });
+    }
+    result = { runId: run.id, status: "draft" };
+  } else if (operation === "updateMember") {
+    const member = snapshot.members.find((entry) => entry.id === request.memberId);
+    if (!member) fail_("NOT_FOUND", "The member does not exist.");
+    expectedVersion_(member, request.memberVersion);
+    if (typeof request.name !== "string" || !request.name.trim() || request.name.length > 100 ||
+        !Array.isArray(request.roles) || !request.roles.length || request.roles.some((role) => !["runner", "leader", "sweeper", "admin"].includes(role)) ||
+        typeof request.active !== "boolean") fail_("INVALID_MEMBER", "Supply a name, valid roles and active flag.");
+    const roles = Array.from(new Set(request.roles));
+    if (member.roles.includes("admin") && (!request.active || !roles.includes("admin")) &&
+        !snapshot.members.some((entry) => entry.id !== member.id && entry.active && entry.roles.includes("admin"))) {
+      fail_("LAST_ADMIN", "The last active administrator cannot be removed.");
+    }
+    if (snapshot.groups.some((entry) => {
+      const week = snapshot.weeks.find((candidate) => candidate.id === entry.runId);
+      return week && !["cancelled", "archived"].includes(week.status) && new Date(week.startsAt) > now &&
+        ((entry.leaderId === member.id && (!request.active || !roles.includes("leader"))) ||
+         (entry.sweeperId === member.id && (!request.active || !roles.includes("sweeper"))));
+    })) {
+      fail_("ASSIGNMENT_EXISTS", "Remove the member's assignments before changing eligibility.");
+    }
+    member.name = request.name.trim();
+    member.roles = roles;
+    member.active = request.active;
+    member.version++;
+    if (!member.active || !roles.includes("runner")) {
+      snapshot.bookings.filter((booking) => booking.memberId === member.id && booking.status !== "cancelled")
+        .forEach((booking) => {
+          const bookingRun = snapshot.weeks.find((entry) => entry.id === booking.runId);
+          if (!bookingRun || ["archived", "cancelled"].includes(bookingRun.status) || new Date(bookingRun.startsAt) <= now) return;
+          if (booking.source === "assignment") return;
+          cancelBooking_(snapshot, booking, auditContext);
+          const bookingGroup = snapshot.groups.find((entry) => entry.id === booking.groupId);
+          promoteQueue_(snapshot, bookingGroup, now, auditContext);
+          bookingGroup.version++;
+          touched.add(bookingRun.id);
+        });
+      touched.forEach((id) => snapshot.weeks.find((entry) => entry.id === id).version++);
+    }
+    result = { memberId: member.id, version: member.version };
+  } else {
+    run = snapshot.weeks.find((entry) => entry.id === request.runId);
+    if (!run) fail_("NOT_FOUND", "The run does not exist.");
+    expectedVersion_(run, request.runVersion);
+    if (["archived", "cancelled"].includes(run.status)) fail_("RUN_CLOSED", "This run is read-only; cancelled runs retain their cancellation status.");
+    const runOperations = ["publishRun", "cancelRun", "archiveRun"];
+    if (!runOperations.includes(operation)) {
+      const ownBooking = operation === "leave" && !request.groupId &&
+        snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === actor.id && entry.status !== "cancelled");
+      const groupId = request.groupId || (ownBooking && ownBooking.groupId);
+      group = snapshot.groups.find((entry) => entry.id === groupId && entry.runId === run.id);
+      if (!group) fail_("NOT_FOUND", "The selected group does not belong to this run.");
+      if (operation !== "leave" || request.groupId || request.groupVersion !== undefined) expectedVersion_(group, request.groupVersion);
+      touched.add(group.id);
+    }
+    switch (operation) {
+      case "publishRun":
+        if (run.status !== "draft" || new Date(run.startsAt) <= now || new Date(run.bookingClosesAt) <= now) fail_("INVALID_PUBLISH", "Only future draft runs with an open booking window can be published.");
+        if (snapshot.weeks.some((entry) => entry.id !== run.id && entry.status === "published" && new Date(entry.startsAt) > now)) fail_("PUBLISHED_RUN_EXISTS", "Another future run is already published.");
+        run.status = "published";
+        result = { status: run.status };
+        break;
+      case "cancelRun":
+        if (new Date(run.startsAt) <= now || typeof request.cancellationReason !== "string" || !request.cancellationReason.trim() || request.cancellationReason.length > 1000) fail_("INVALID_CANCELLATION", "Only future runs with a cancellation reason can be cancelled.");
+        run.status = "cancelled";
+        run.cancellationReason = request.cancellationReason.trim();
+        snapshot.bookings.filter((entry) => entry.runId === run.id && entry.status !== "cancelled").forEach((entry) => cancelBooking_(snapshot, entry, auditContext));
+        snapshot.groups.filter((entry) => entry.runId === run.id).forEach((entry) => { delete entry.leaderId; delete entry.sweeperId; entry.version++; });
+        result = { status: run.status };
+        break;
+      case "archiveRun":
+        if (new Date(run.startsAt) > now) fail_("INVALID_ARCHIVE", "Only completed runs can be archived.");
+        run.status = "archived";
+        result = { status: run.status };
+        break;
+      case "book":
+      case "leave":
+      case "switchGroup":
+      case "moveRunner": {
+        if (operation !== "moveRunner" && !actor.roles.includes("runner")) fail_("FORBIDDEN", "Only runners can manage bookings.");
+        assertBookingOpen_(run, now);
+        const memberId = operation === "moveRunner" ? request.memberId : actor.id;
+        const member = snapshot.members.find((entry) => entry.id === memberId && entry.active && entry.roles.includes("runner"));
+        if (!member) fail_("FORBIDDEN", "The runner is not an active eligible member.");
+        const original = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
+        if (operation === "book" && original) fail_("DUPLICATE_BOOKING", "You already have a booking for this run.");
+        if (operation !== "book" && !original) fail_("NOT_FOUND", "There is no active booking to change.");
+        if ((original && original.source === "assignment") ||
+            snapshot.groups.some((entry) => entry.runId === run.id && (entry.leaderId === memberId || entry.sweeperId === memberId))) fail_("ASSIGNMENT_EXISTS", "An administrator must remove the assignment before this runner can change groups.");
+        if (operation === "leave") {
+          if (original.groupId !== group.id) fail_("WRONG_GROUP", "The booking is not in this group.");
+          cancelBooking_(snapshot, original, auditContext);
+          promoteQueue_(snapshot, group, now, auditContext);
+          result = { status: "cancelled" };
+        } else {
+          if (original && original.groupId === group.id) fail_("SAME_GROUP", "Choose another group.");
+          // A full destination produces a waitlist booking atomically; it does
+          // not retain the original place. Any rejected request retains it.
+          if (original) {
+            const source = snapshot.groups.find((entry) => entry.id === original.groupId);
+            if (request.sourceGroupVersion !== undefined) expectedVersion_(source, request.sourceGroupVersion);
+            cancelBooking_(snapshot, original, auditContext);
+            promoteQueue_(snapshot, source, now, auditContext);
+            touched.add(source.id);
+          }
+          const booking = {
+            id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId,
+            status: occupantCount_(snapshot, group) < group.capacity ? "confirmed" : "waitlisted",
+            source: "member", bookedAt: now.toISOString(), version: 1,
+          };
+          snapshot.bookings.push(booking);
+          if (booking.status === "waitlisted") queueAudit_(snapshot, booking, "waitlistJoined", auditContext);
+          result = { bookingId: booking.id, status: booking.status };
+        }
+        break;
+      }
+      case "updateRoute":
+        assertGroupManager_(actor, group);
+        assertFutureRun_(run, now);
+        if (typeof request.routeDescription !== "string" || request.routeDescription.length > 5000) fail_("INVALID_ROUTE", "Route text must be at most 5,000 characters.");
+        group.routeDescription = request.routeDescription.trim();
+        group.routeNeedsReview = false;
+        result = { groupId: group.id };
+        break;
+      case "assignLeader":
+      case "assignSweeper":
+        if (operation === "assignSweeper") assertGroupManager_(actor, group);
+        assertFutureRun_(run, now);
+        assignOccupant_(snapshot, run, group, request, now, auditContext);
+        result = { groupId: group.id };
+        break;
+      case "recordAttendance": {
+        assertGroupManager_(actor, group);
+        if (new Date(run.startsAt) > now) fail_("ATTENDANCE_NOT_STARTED", "Attendance can be recorded once the run starts.");
+        if (!["present", "absent"].includes(request.outcome)) fail_("INVALID_ATTENDANCE", "Attendance must be present or absent.");
+        if (!snapshot.bookings.some((entry) => entry.runId === run.id && entry.groupId === group.id && entry.memberId === request.memberId && entry.status === "confirmed") &&
+            ![group.leaderId, group.sweeperId].includes(request.memberId)) fail_("NOT_CONFIRMED", "Attendance is only available for confirmed group occupants.");
+        let attendance = snapshot.attendance.find((entry) => entry.runId === run.id && entry.memberId === request.memberId);
+        if (!attendance) {
+          attendance = { id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId: request.memberId };
+          snapshot.attendance.push(attendance);
+        }
+        attendance.outcome = request.outcome;
+        attendance.recordedAt = now.toISOString();
+        result = { attendanceId: attendance.id };
+        break;
+      }
+      default:
+        fail_("UNKNOWN_OPERATION", "Unsupported operation.");
+    }
+    touched.forEach((id) => snapshot.groups.find((entry) => entry.id === id).version++);
+    run.version++;
+    result.runVersion = run.version;
+    if (group) result.groupVersion = group.version;
+  }
+  snapshot.audit.push({
+    id: Utilities.getUuid(), runId: run ? run.id : "", groupId: group ? group.id : undefined,
+    memberId: request.memberId || actor.id, actorId: actor.id, action: operation,
+    at: now.toISOString(), requestId: request.requestId,
+  });
+  return result;
+}
+
+function assignOccupant_(snapshot, run, group, request, now, auditContext) {
+  const role = request.operation === "assignLeader" ? "leader" : "sweeper";
+  const field = role + "Id";
+  const previousId = group[field];
+  const memberId = request.memberId;
+  if (!memberId && role === "leader") fail_("INVALID_ASSIGNMENT", "Choose an eligible leader.");
+  if (memberId) {
+    const member = snapshot.members.find((entry) => entry.id === memberId && entry.active && entry.roles.includes(role));
+    if (!member) fail_("INVALID_ASSIGNMENT", "Choose an active member with the appropriate role.");
+    if (snapshot.groups.some((entry) => entry.runId === run.id && entry.id !== group.id && (entry.leaderId === memberId || entry.sweeperId === memberId)) ||
+        snapshot.bookings.some((entry) => entry.runId === run.id && entry.groupId !== group.id && entry.memberId === memberId && entry.status !== "cancelled")) {
+      fail_("DUPLICATE_BOOKING", "The member already occupies or waitlists another group.");
+    }
+  }
+  delete group[field];
+  if (previousId && previousId !== memberId && ![group.leaderId, group.sweeperId].includes(previousId)) {
+    snapshot.bookings.filter((entry) => entry.runId === run.id && entry.groupId === group.id && entry.memberId === previousId && entry.source === "assignment" && entry.status !== "cancelled").forEach((entry) => cancelBooking_(snapshot, entry, auditContext));
+  }
+  if (memberId) {
+    const booking = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
+    if (!(booking && booking.status === "confirmed") && ![group.leaderId, group.sweeperId].includes(memberId) && occupantCount_(snapshot, group) >= group.capacity) {
+      fail_("GROUP_FULL", "The assignment would exceed group capacity.");
+    }
+    group[field] = memberId;
+    if (booking) {
+      if (booking.status !== "confirmed") {
+        assertBookingOpen_(run, now);
+        booking.status = "confirmed";
+        booking.version++;
+        queueAudit_(snapshot, booking, "promoted", auditContext);
+      }
+    } else {
+      snapshot.bookings.push({ id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId, status: "confirmed", source: "assignment", bookedAt: now.toISOString(), version: 1 });
+    }
+  }
+  promoteQueue_(snapshot, group, now, auditContext);
+}
+
+function promoteQueue_(snapshot, group, now, auditContext) {
+  const run = snapshot.weeks.find((entry) => entry.id === group.runId);
+  if (!run || !bookingOpen_(run, now)) return;
+  const queue = snapshot.bookings.filter((entry) => entry.groupId === group.id && entry.status === "waitlisted")
+    .sort((a, b) => new Date(a.bookedAt).getTime() - new Date(b.bookedAt).getTime() || a.id.localeCompare(b.id));
+  for (const booking of queue) {
+    const member = snapshot.members.find((entry) => entry.id === booking.memberId && entry.active && entry.roles.includes("runner"));
+    if (!member) { cancelBooking_(snapshot, booking, auditContext); continue; }
+    if (occupantCount_(snapshot, group) >= group.capacity) break;
+    booking.status = "confirmed";
+    booking.version++;
+    queueAudit_(snapshot, booking, "promoted", auditContext);
   }
 }
 
+function occupantCount_(snapshot, group) {
+  const ids = new Set(snapshot.bookings.filter((entry) => entry.groupId === group.id && entry.status === "confirmed").map((entry) => entry.memberId));
+  if (group.leaderId) ids.add(group.leaderId);
+  if (group.sweeperId) ids.add(group.sweeperId);
+  return ids.size;
+}
+
+function cancelBooking_(snapshot, booking, auditContext) {
+  booking.status = "cancelled";
+  booking.version++;
+  if (auditContext) queueAudit_(snapshot, booking, "withdrawn", auditContext);
+}
+function queueAudit_(snapshot, booking, action, context) {
+  snapshot.audit.push({
+    id: Utilities.getUuid(), runId: booking.runId, groupId: booking.groupId,
+    memberId: booking.memberId, actorId: context.actorId, action, at: context.at,
+    requestId: context.requestId,
+    queueSize: snapshot.bookings.filter((entry) => entry.groupId === booking.groupId && entry.status === "waitlisted").length,
+  });
+}
+function expectedVersion_(record, expected) {
+  if (!Number.isInteger(expected) || record.version !== expected) fail_("STALE_VERSION", "This record changed. Refresh and try again.");
+}
+function assertBookingOpen_(run, now) {
+  if (!bookingOpen_(run, now)) fail_("BOOKING_CLOSED", "Booking is not currently open.");
+}
+function bookingOpen_(run, now) {
+  return run.status === "published" && now >= new Date(run.bookingOpensAt) && now < new Date(run.bookingClosesAt);
+}
+function assertFutureRun_(run, now) {
+  if (new Date(run.startsAt) <= now) fail_("RUN_STARTED", "This run has already started.");
+}
+function assertGroupManager_(actor, group) {
+  if (!actor.roles.includes("admin") && !(actor.roles.includes("leader") && group.leaderId === actor.id)) fail_("FORBIDDEN", "Only the assigned leader or an administrator can manage this group.");
+}
+function normalizeEmail_(email) { return typeof email === "string" ? email.trim().toLowerCase() : ""; }
+function requestFingerprint_(request) {
+  const fields = Object.keys(request).filter((key) => key !== "secret").sort();
+  return JSON.stringify(fields.map((key) => [key, request[key]]));
+}
+function snapshotFor_(snapshot, email) {
+  const result = JSON.parse(JSON.stringify(snapshot));
+  const member = result.members.find((entry) => entry.active && entry.email === normalizeEmail_(email));
+  if (member) result.currentMemberId = member.id;
+  return result;
+}
+function fail_(code, message) {
+  const error = new Error(message);
+  error.platformCode = code;
+  throw error;
+}
 function withLock_(operation) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) {
-    return response_(false, "LOCK_TIMEOUT", "Another update is in progress. Please try again.");
-  }
-  try {
-    return operation();
-  } finally {
-    lock.releaseLock();
-  }
+  if (!lock.tryLock(10000)) return response_(false, "LOCK_TIMEOUT", "Another update is in progress. Please try again.");
+  try { return operation(); } finally { lock.releaseLock(); }
 }
-
-function book_(request) {
-  const member = findOne_("Members", "email", request.email);
-  if (!member || member.active !== "TRUE" || !hasRole_(member.roles, "runner")) {
-    return response_(false, "FORBIDDEN", "Only active members can make bookings.");
-  }
-
-  const run = findOne_("Runs", "runId", request.runId);
-  const group = findOne_("Groups", "groupId", request.groupId);
-  if (!run || !group || group.runId !== run.runId) {
-    return response_(false, "NOT_FOUND", "The selected run or group no longer exists.");
-  }
-  if (!versionsMatch_(run, request.runVersion) || !versionsMatch_(group, request.groupVersion)) {
-    return response_(false, "STALE_VERSION", "This run changed. Refresh and choose again.");
-  }
-
-  const now = new Date();
-  if (run.status !== "published" || now < new Date(run.bookingOpensAt) || now >= new Date(run.bookingClosesAt)) {
-    return response_(false, "BOOKING_CLOSED", "Booking is not currently open.");
-  }
-  const bookings = records_("Bookings");
-  if (bookings.some((b) => b.runId === run.runId && b.memberId === member.memberId && b.status !== "cancelled")) {
-    return response_(false, "DUPLICATE_BOOKING", "You already have a booking for this run.");
-  }
-
-  const confirmed = bookings.filter((b) => b.groupId === group.groupId && b.status === "confirmed").length;
-  append_("Bookings", {
-    bookingId: Utilities.getUuid(),
-    runId: run.runId,
-    groupId: group.groupId,
-    memberId: member.memberId,
-    status: confirmed < Number(group.capacity) ? "confirmed" : "waitlisted",
-    bookingSource: "member",
-    bookedAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-    version: 1,
-  });
-  incrementVersion_(group);
-  incrementVersion_(run);
-  return response_(true, null, null, { status: confirmed < Number(group.capacity) ? "confirmed" : "waitlisted" });
-}
-
-function publishRun_(request) {
-  const admin = findOne_("Members", "email", request.email);
-  if (!admin || admin.active !== "TRUE" || !hasRole_(admin.roles, "admin")) {
-    return response_(false, "FORBIDDEN", "Only administrators can publish a run.");
-  }
-  const run = findOne_("Runs", "runId", request.runId);
-  if (!run || !versionsMatch_(run, request.runVersion)) {
-    return response_(false, "STALE_VERSION", "This run changed. Refresh and try again.");
-  }
-  if (run.status !== "draft" || new Date(run.startsAt) <= new Date()) {
-    return response_(false, "INVALID_PUBLISH", "Only future draft runs can be published.");
-  }
-  const anotherPublishedRun = records_("Runs").some((candidate) =>
-    candidate.runId !== run.runId &&
-    candidate.status === "published" &&
-    new Date(candidate.startsAt) > new Date());
-  if (anotherPublishedRun) {
-    return response_(false, "PUBLISHED_RUN_EXISTS", "Another future run is already published.");
-  }
-  update_(run, { status: "published", version: Number(run.version) + 1 });
-  return response_(true, null, null, { status: "published" });
-}
-
-function cancelRun_(request) {
-  const admin = findOne_("Members", "email", request.email);
-  if (!admin || admin.active !== "TRUE" || !hasRole_(admin.roles, "admin")) {
-    return response_(false, "FORBIDDEN", "Only administrators can cancel a run.");
-  }
-  const run = findOne_("Runs", "runId", request.runId);
-  if (!run || !versionsMatch_(run, request.runVersion)) {
-    return response_(false, "STALE_VERSION", "This run changed. Refresh and try again.");
-  }
-  if (new Date(run.startsAt) <= new Date() || !["draft", "published"].includes(run.status) || !request.cancellationReason) {
-    return response_(false, "INVALID_CANCELLATION", "Only future draft or published runs with a reason can be cancelled.");
-  }
-  update_(run, { status: "cancelled", cancellationReason: request.cancellationReason, version: Number(run.version) + 1 });
-  records_("Bookings")
-    .filter((booking) => booking.runId === run.runId && booking.status !== "cancelled")
-    .forEach((booking) => update_(booking, { status: "cancelled", updatedAt: new Date().toISOString(), version: Number(booking.version) + 1 }));
-  return response_(true, null, null, { status: "cancelled" });
-}
-
-function archiveRun_(request) {
-  const run = findOne_("Runs", "runId", request.runId);
-  if (!run || run.status === "archived" || new Date(run.startsAt) > new Date()) {
-    return response_(false, "INVALID_ARCHIVE", "This run cannot be archived yet.");
-  }
-  const archiveKey = `run:${run.runId}`;
-  if (!findOne_("Archives", "archiveKey", archiveKey)) {
-    const groups = records_("Groups").filter((group) => group.runId === run.runId);
-    const bookings = records_("Bookings");
-    groups.forEach((group) => {
-      append_("Archives", {
-        archiveKey,
-        runId: run.runId,
-        groupId: group.groupId,
-        groupNumber: group.groupNumber,
-        confirmedCount: bookings.filter((booking) => booking.groupId === group.groupId && booking.status === "confirmed").length,
-        waitlistedCount: bookings.filter((booking) => booking.groupId === group.groupId && booking.status === "waitlisted").length,
-        archivedAt: new Date().toISOString(),
-      });
-    });
-  }
-  update_(run, { status: "archived", version: Number(run.version) + 1 });
-  return response_(true, null, null, { status: "archived" });
-}
-
-function records_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  const values = sheet.getDataRange().getValues();
-  const headers = values.shift();
-  return values.filter((row) => row.some(String)).map((row, index) => {
-    const record = { _sheet: sheet, _row: index + 2 };
-    headers.forEach((header, column) => record[header] = row[column]);
-    return record;
-  });
-}
-
-function findOne_(sheet, field, value) {
-  return records_(sheet).find((record) => String(record[field]) === String(value));
-}
-
-function append_(sheetName, values) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  sheet.appendRow(headers.map((header) => values[header] || ""));
-}
-
-function update_(record, changes) {
-  const headers = record._sheet.getRange(1, 1, 1, record._sheet.getLastColumn()).getValues()[0];
-  headers.forEach((header, index) => {
-    if (Object.prototype.hasOwnProperty.call(changes, header)) {
-      record._sheet.getRange(record._row, index + 1).setValue(changes[header]);
-    }
-  });
-}
-
-function incrementVersion_(record) {
-  update_(record, { version: Number(record.version) + 1 });
-}
-
-function versionsMatch_(record, expected) {
-  return Number(record.version) === Number(expected);
-}
-
 function hasRole_(roles, role) {
-  return String(roles).split(",").map((entry) => entry.trim()).includes(role);
+  return (Array.isArray(roles) ? roles : String(roles).split(",").map((entry) => entry.trim())).includes(role);
 }
-
 function response_(ok, code, message, data) {
-  return ContentService
-    .createTextOutput(JSON.stringify({ ok, code, message, data }))
-    .setMimeType(ContentService.MimeType.JSON);
+  const result = { ok };
+  if (code) result.code = code;
+  if (message) result.message = message;
+  if (data !== undefined) result.data = data;
+  return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
 }

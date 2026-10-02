@@ -1,79 +1,43 @@
 "use client";
 
-import { useState } from "react";
-import { signIn } from "next-auth/react";
-import type { Booking, Group, Run } from "@/lib/domain";
-import { confirmedCount } from "@/lib/domain";
+import Link from "next/link";
+import type { Group, Run } from "@/lib/domain";
+import { bookingIsOpen, confirmedCount } from "@/lib/domain";
+import type { PlatformSnapshot } from "@/lib/platform-types";
+import { queuePosition } from "@/lib/analytics";
+import type { Mutate } from "./club-dashboard";
 
-interface BookingGroupsProps {
-  run: Run;
-  groups: Group[];
-  bookings: Booking[];
-}
-
-export function BookingGroups({ run, groups, bookings }: BookingGroupsProps) {
-  const [message, setMessage] = useState<string>();
-  const [submittingGroup, setSubmittingGroup] = useState<string>();
-
-  async function book(group: Group) {
-    setSubmittingGroup(group.id);
-    setMessage(undefined);
-    try {
-      const response = await fetch("/api/bookings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          runId: run.id,
-          groupId: group.id,
-          runVersion: run.version,
-          groupVersion: group.version,
-        }),
-      });
-      const body = (await response.json()) as {
-        message?: string;
-        data?: { status?: string };
-      };
-      if (response.status === 401) {
-        await signIn("google");
-        return;
-      }
-      setMessage(
-        body.data?.status === "waitlisted"
-          ? "That group is currently full; you have joined its waitlist."
-          : body.message ?? "Your booking has been recorded.",
-      );
-    } catch {
-      setMessage("We could not reach the booking service. Please try again.");
-    } finally {
-      setSubmittingGroup(undefined);
-    }
-  }
-
-  return (
-    <>
-      {message && <p className="notice" role="status">{message}</p>}
-      <div className="grid">
-        {groups.map((group) => {
-          const count = confirmedCount(group.id, bookings);
-          return (
-            <article className="group" key={group.id}>
-              <div className="group-number">{group.number}</div>
-              <div>
-                <h3>{group.paceLabel}</h3>
-                <p>{count} of {group.capacity} runners booked</p>
-              </div>
-              <button
-                type="button"
-                className="secondary"
-                disabled={submittingGroup === group.id}
-                onClick={() => void book(group)}
-              >
-                {submittingGroup === group.id ? "Booking..." : "Book this group"}
-              </button>
-            </article>
-          );
-        })}
-      </div>
-    </>
-  );
+export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
+  snapshot: PlatformSnapshot; run: Run; groups: Group[]; mutate: Mutate; pending: boolean;
+}) {
+  const own = snapshot.bookings.find(b => b.runId === run.id && b.memberId === snapshot.currentMemberId && b.status !== "cancelled");
+  const open = bookingIsOpen(run, new Date());
+  return <section className="groups">
+    <div className="section-title"><div><p className="eyebrow">Find your people</p><h2>Choose your pace group</h2></div><p>{groups.length} groups · {own ? "You have a booking this week" : "One group per runner"}</p></div>
+    {own && <p className="notice">Your booking: Group {snapshot.groups.find(g => g.id === own.groupId)?.number} · {own.status === "waitlisted" ? `waitlist position #${queuePosition(snapshot, own.groupId, own.memberId)} (not confirmed)` : "confirmed"}{own.source === "assignment" && " · assigned volunteer; ask an administrator to change this assignment."}</p>}
+    {!open && <p className="notice">Booking is closed for this week. You can still view group information.</p>}
+    <div className="grid">{groups.map(group => {
+      const count = confirmedCount(group.id, snapshot.bookings);
+      const spaces = Math.max(0, group.capacity - count);
+      const waitlist = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").length;
+      const mine = own?.groupId === group.id;
+      const leader = snapshot.members.find(m => m.id === group.leaderId)?.name;
+      const sweeper = snapshot.members.find(m => m.id === group.sweeperId)?.name;
+      return <article className={`group ${mine ? "my-group" : ""}`} key={group.id}>
+        <div className="group-top"><span className="group-number">{String(group.number).padStart(2, "0")}</span><span className={`availability ${spaces === 0 ? "full" : spaces < 5 ? "amber" : "green"}`}>{spaces === 0 ? "Full · waitlist" : `${spaces} places left`}</span></div>
+        <h3>{group.name ?? `Group ${group.number}`}</h3><p className="pace">{group.paceLabel}</p><p>{group.distanceLabel ?? "Distance to be confirmed"}</p>
+        <div className="occupancy"><span style={{ width: `${Math.min(100, count / group.capacity * 100)}%` }} /></div>
+        <p>{count}/{group.capacity} confirmed · {waitlist} waiting</p>
+        <div className="volunteers"><p>Leader · <strong>{leader ?? (group.leaderId ? "Assigned club leader" : "To be assigned")}</strong></p><p>Sweeper · {sweeper ?? (group.sweeperId ? "Assigned club member" : "Not assigned")}</p></div>
+        <p className="route-summary">{group.routeNeedsReview ? "Route needs review" : group.routeDescription ? group.routeDescription : "Route to be confirmed"}</p>
+        {snapshot.currentMemberId ? <Link className="details-link" href={`/groups/${encodeURIComponent(group.id)}`}>Route, runners & waitlist →</Link> : <Link href="/auth/signin">Sign in for group details</Link>}
+        {snapshot.currentMemberId ? <button disabled={pending || !open || own?.source === "assignment"} className={mine ? "secondary" : ""} onClick={() => {
+          if (own && !mine && !spaces && !window.confirm("This group is full. Switching will release your current booking or queue place and join the destination waitlist. You will not have a confirmed place. Continue?")) return;
+          void mutate(mine ? "leave" : own ? "switchGroup" : "book", {
+            runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version,
+          });
+        }}>{pending ? "Saving…" : mine ? "Leave this group" : own ? (spaces ? "Switch to this group" : "Switch to waitlist") : spaces ? "Join this group" : "Join waitlist"}</button> : <Link className="button" href="/auth/signin">Sign in to book</Link>}
+      </article>;
+    })}</div>
+  </section>;
 }
