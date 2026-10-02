@@ -60,6 +60,10 @@ export const snapshotSchema = z.object({
   for (const week of snapshot.weeks) {
     if (Date.parse(week.bookingOpensAt) >= Date.parse(week.bookingClosesAt) ||
         Date.parse(week.bookingClosesAt) >= Date.parse(week.startsAt)) fail("Invalid booking window.");
+    if (week.status === "draft" || week.status === "published") {
+      const groups = snapshot.groups.filter((group) => group.runId === week.id);
+      if (groups.length !== 13 || new Set(groups.map((group) => group.number)).size !== 13) fail("Every live week must have thirteen distinct groups.");
+    }
   }
   for (const group of snapshot.groups) {
     if (!weeks.has(group.runId)) fail("Group references an unknown week.");
@@ -74,8 +78,12 @@ export const snapshotSchema = z.object({
       active.add(key);
     }
   }
+  const outcomes = new Set<string>();
   for (const record of snapshot.attendance) {
     if (groups.get(record.groupId)?.runId !== record.runId || !members.has(record.memberId)) fail("Invalid attendance reference.");
+    const key = JSON.stringify([record.runId, record.memberId]);
+    if (outcomes.has(key)) fail("Multiple attendance outcomes for one member in a week.");
+    outcomes.add(key);
   }
 });
 

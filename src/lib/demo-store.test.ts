@@ -96,7 +96,7 @@ describe("isolated explicit demo", () => {
     const { mutateDemo, payload } = await setup();
     expect(() => mutateDemo("cancelRun", { ...payload(), cancellationReason: "Unsafe weather" })).toThrow("Administrator");
     expect(() => mutateDemo("updateRoute", { ...payload(), routeDescription: "Park loop" }, "leader")).toThrow("Assigned leader");
-    expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-runner", name: "Alex", roles: ["admin"], active: true })).toThrow("Administrator");
+    expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-runner", memberVersion: 1, name: "Alex", roles: ["admin"], active: true })).toThrow("Administrator");
   });
   it("persists route edits only for the assigned leader", async () => {
     const { getDemoSnapshot, mutateDemo, run } = await setup();
@@ -125,19 +125,22 @@ describe("isolated explicit demo", () => {
     expect(after.weeks.find(w => w.id === run.id)!.cancellationReason).toBe("Unsafe weather conditions.");
     expect(after.bookings.filter(b => b.runId === run.id)).toHaveLength(before);
     expect(after.bookings.filter(b => b.runId === run.id).every(b => b.status === "cancelled")).toBe(true);
+    expect(() => mutateDemo("archiveRun", { requestId: randomUUID(), runId: run.id, runVersion: after.weeks.find(w => w.id === run.id)!.version }, "admin")).toThrow("cancelled weeks remain cancelled");
   });
   it("records actual attendance, keeps other unknown outcomes, and disallows pre-run outcomes", async () => {
     const { getDemoSnapshot, mutateDemo, run } = await setup();
     const upcoming = getDemoSnapshot().groups.find(g => g.runId === run.id && g.leaderId === "demo-leader")!;
     expect(() => mutateDemo("recordAttendance", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: upcoming.id, groupVersion: upcoming.version, memberId: "demo-leader", outcome: "present" }, "leader")).toThrow("after");
     const past = getDemoSnapshot().weeks.find(w => w.status === "archived")!;
-    const group = getDemoSnapshot().groups.find(g => g.runId === past.id && g.leaderId === "demo-leader")!;
+    const pastGroup = getDemoSnapshot().groups.find(g => g.runId === past.id && g.leaderId === "demo-leader")!;
+    expect(() => mutateDemo("recordAttendance", { requestId: randomUUID(), runId: past.id, runVersion: past.version, groupId: pastGroup.id, groupVersion: pastGroup.version, memberId: "demo-leader", outcome: "present" }, "leader")).toThrow("before archival");
+    vi.setSystemTime(new Date(new Date(run.startsAt).getTime() + 60000));
     const before = getDemoSnapshot().attendance.length;
-    mutateDemo("recordAttendance", { requestId: randomUUID(), runId: past.id, runVersion: past.version, groupId: group.id, groupVersion: group.version, memberId: "demo-leader", outcome: "absent" }, "leader");
+    mutateDemo("recordAttendance", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: upcoming.id, groupVersion: upcoming.version, memberId: "demo-leader", outcome: "absent" }, "leader");
     const after = getDemoSnapshot();
     expect(after.attendance.length).toBeGreaterThanOrEqual(before);
-    expect(after.attendance.find(a => a.runId === past.id && a.memberId === "demo-leader")!.outcome).toBe("absent");
-    expect(after.bookings.find(b => b.runId === past.id && b.memberId === "demo-leader")!.status).toBe("confirmed");
+    expect(after.attendance.find(a => a.runId === run.id && a.memberId === "demo-leader")!.outcome).toBe("absent");
+    expect(after.bookings.find(b => b.runId === run.id && b.memberId === "demo-leader")!.status).toBe("confirmed");
   });
   it("replaces volunteer assignments without losing capacity or queue order", async () => {
     const { getDemoSnapshot, mutateDemo, run } = await setup();
@@ -161,9 +164,61 @@ describe("isolated explicit demo", () => {
   });
   it("updates member roles and active status only with admin access", async () => {
     const { mutateDemo, getDemoSnapshot } = await setup();
-    const snapshot = mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-runner", name: "Alex Updated", roles: ["runner", "sweeper"], active: true }, "admin");
+    const snapshot = mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-runner", memberVersion: 1, name: "Alex Updated", roles: ["runner", "sweeper"], active: true }, "admin");
     expect(snapshot.members.find(m => m.id === "demo-runner")!.name).toBe("Alex Updated");
     expect(getDemoSnapshot().members.find(m => m.id === "demo-runner")!.roles).toEqual(["runner", "sweeper"]);
-    expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-leader", name: "Priya", roles: ["runner"], active: false }, "admin")).toThrow("assignment");
+    expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-leader", memberVersion: 1, name: "Priya", roles: ["runner"], active: false }, "admin")).toThrow("assignment");
+    expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-runner", memberVersion: 1, name: "Stale Alex", roles: ["runner"], active: true }, "admin")).toThrow("changed");
+  });
+  it("cancels future ordinary bookings and promotes the queue when runner eligibility is removed", async () => {
+    const { getDemoSnapshot, mutateDemo, run, group } = await setup();
+    const snapshot = getDemoSnapshot("admin");
+    const runner = snapshot.bookings.find(b => b.groupId === group.id && b.source === "member" && b.status === "confirmed")!;
+    const queued = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").sort((a, b) => a.bookedAt.localeCompare(b.bookedAt))[0];
+    const member = snapshot.members.find(m => m.id === runner.memberId)!;
+    mutateDemo("updateMember", { requestId: randomUUID(), memberId: member.id, memberVersion: member.version, name: member.name, roles: ["runner"], active: false }, "admin");
+    const after = getDemoSnapshot("admin");
+    expect(after.bookings.find(b => b.id === runner.id)!.status).toBe("cancelled");
+    expect(after.bookings.find(b => b.id === queued.id)!.status).toBe("confirmed");
+    expect(after.audit.some(a => a.action === "promoted" && a.memberId === queued.memberId && a.runId === run.id)).toBe(true);
+  });
+  it("never promotes waitlisted runners at or after the booking cutoff", async () => {
+    const { getDemoSnapshot, mutateDemo, run, group } = await setup();
+    const snapshot = getDemoSnapshot("admin");
+    const runner = snapshot.bookings.find(b => b.groupId === group.id && b.source === "member" && b.status === "confirmed")!;
+    const queued = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").sort((a, b) => a.bookedAt.localeCompare(b.bookedAt))[0];
+    const member = snapshot.members.find(m => m.id === runner.memberId)!;
+    vi.setSystemTime(new Date(run.bookingClosesAt));
+    mutateDemo("updateMember", { requestId: randomUUID(), memberId: member.id, memberVersion: member.version, name: member.name, roles: ["runner"], active: false }, "admin");
+    expect(getDemoSnapshot("admin").bookings.find(b => b.id === queued.id)!.status).toBe("waitlisted");
+    expect(getDemoSnapshot("admin").bookings.find(b => b.id === runner.id)!.status).toBe("cancelled");
+  });
+  it("allows a dual-role volunteer, counts them once and retains their booking when one role is removed", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-leader", memberVersion: 1, name: "Priya Shah", roles: ["runner", "leader", "sweeper"], active: true }, "admin");
+    let snapshot = getDemoSnapshot("admin");
+    let group = snapshot.groups.find(g => g.runId === run.id && g.leaderId === "demo-leader")!;
+    const beforeCount = confirmedCount(group.id, snapshot.bookings);
+    mutateDemo("assignSweeper", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, memberId: "demo-leader" }, "leader");
+    snapshot = getDemoSnapshot("admin");
+    group = snapshot.groups.find(g => g.id === group.id)!;
+    expect(group.sweeperId).toBe(group.leaderId);
+    expect(snapshot.bookings.filter(b => b.runId === run.id && b.memberId === "demo-leader" && b.status !== "cancelled")).toHaveLength(1);
+    expect(confirmedCount(group.id, snapshot.bookings)).toBe(beforeCount - 1);
+    mutateDemo("assignSweeper", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, memberId: "" }, "leader");
+    snapshot = getDemoSnapshot("admin");
+    expect(snapshot.groups.find(g => g.id === group.id)!.sweeperId).toBeUndefined();
+    expect(snapshot.bookings.find(b => b.runId === run.id && b.memberId === "demo-leader" && b.status !== "cancelled")!.status).toBe("confirmed");
+  });
+  it("fills the final available place with a volunteer without counting their new assignment twice", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    const snapshot = getDemoSnapshot("admin");
+    const group = snapshot.groups.find(g => g.runId === run.id && g.number === 9)!;
+    expect(confirmedCount(group.id, snapshot.bookings)).toBe(18);
+    const member = snapshot.members.find(m => m.roles.includes("sweeper") && !snapshot.bookings.some(b => b.runId === run.id && b.memberId === m.id && b.status !== "cancelled"))!;
+    mutateDemo("assignSweeper", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, memberId: member.id }, "admin");
+    const after = getDemoSnapshot("admin");
+    expect(confirmedCount(group.id, after.bookings)).toBe(19);
+    expect(after.bookings.find(b => b.runId === run.id && b.memberId === member.id)!.status).toBe("confirmed");
   });
 });

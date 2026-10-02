@@ -2,12 +2,19 @@
  * Server-only gateway. Deploy as the spreadsheet owner's web app; never expose
  * GATEWAY_SECRET or this endpoint to browsers. Auth operations share this lock.
  */
+let platformWorkbook_ = null;
+
 function doPost(event) {
   try {
+    platformWorkbook_ = null;
     const request = JSON.parse(event.postData.contents);
     const secret = PropertiesService.getScriptProperties().getProperty("GATEWAY_SECRET");
     if (!secret || typeof request.secret !== "string" || request.secret !== secret) {
       return response_(false, "UNAUTHORIZED", "Invalid gateway credentials.");
+    }
+    const spreadsheet = platformSpreadsheet_();
+    if (!spreadsheet || typeof request.spreadsheetId !== "string" || request.spreadsheetId !== spreadsheet.getId()) {
+      return response_(false, "WORKBOOK_MISMATCH", "The gateway workbook does not match the configured workbook.");
     }
     return withLock_(() => dispatch_(request));
   } catch (error) {
@@ -157,7 +164,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         run.status = "cancelled";
         run.cancellationReason = request.cancellationReason.trim();
         snapshot.bookings.filter((entry) => entry.runId === run.id && entry.status !== "cancelled").forEach((entry) => cancelBooking_(snapshot, entry, auditContext));
-        snapshot.groups.filter((entry) => entry.runId === run.id).forEach((entry) => { delete entry.leaderId; delete entry.sweeperId; entry.version++; });
+        snapshot.groups.filter((entry) => entry.runId === run.id).forEach((entry) => entry.version++);
         result = { status: run.status };
         break;
       case "archiveRun":
@@ -343,7 +350,7 @@ function assertGroupManager_(actor, group) {
 }
 function normalizeEmail_(email) { return typeof email === "string" ? email.trim().toLowerCase() : ""; }
 function requestFingerprint_(request) {
-  const fields = Object.keys(request).filter((key) => key !== "secret").sort();
+  const fields = Object.keys(request).filter((key) => key !== "secret" && key !== "spreadsheetId").sort();
   return JSON.stringify(fields.map((key) => [key, request[key]]));
 }
 function snapshotFor_(snapshot, email) {
@@ -361,6 +368,13 @@ function withLock_(operation) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return response_(false, "LOCK_TIMEOUT", "Another update is in progress. Please try again.");
   try { return operation(); } finally { lock.releaseLock(); }
+}
+function platformSpreadsheet_() {
+  const configured = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (typeof configured !== "string" || !configured.trim()) fail_("NOT_CONFIGURED", "The gateway workbook is not configured.");
+  const id = configured.trim();
+  if (!platformWorkbook_ || platformWorkbook_.getId() !== id) platformWorkbook_ = SpreadsheetApp.openById(id);
+  return platformWorkbook_;
 }
 function hasRole_(roles, role) {
   return (Array.isArray(roles) ? roles : String(roles).split(",").map((entry) => entry.trim())).includes(role);

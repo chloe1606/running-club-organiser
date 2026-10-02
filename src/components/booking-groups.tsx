@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import type { Group, Run } from "@/lib/domain";
-import { bookingIsOpen, confirmedCount } from "@/lib/domain";
-import type { PlatformSnapshot } from "@/lib/platform-types";
-import { queuePosition } from "@/lib/analytics";
+import type { Group, Run } from "../lib/domain";
+import { bookingIsOpen, confirmedCount } from "../lib/domain";
+import type { PlatformSnapshot } from "../lib/platform-types";
+import { queuePosition } from "../lib/analytics";
 import type { Mutate } from "./club-dashboard";
 
 export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
@@ -33,9 +33,9 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
         {snapshot.currentMemberId ? <Link className="details-link" href={`/groups/${encodeURIComponent(group.id)}`}>Route, runners & waitlist →</Link> : <Link href="/auth/signin">Sign in for group details</Link>}
         {snapshot.currentMemberId ? <button disabled={pending || !open || own?.source === "assignment"} className={mine ? "secondary" : ""} onClick={() => {
           if (own && !mine && !spaces && !window.confirm("This group is full. Switching will release your current booking or queue place and join the destination waitlist. You will not have a confirmed place. Continue?")) return;
-          void mutate(mine ? "leave" : own ? "switchGroup" : "book", {
-            runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version,
-          });
+          void mutate(mine ? "leave" : own ? "switchGroup" : "book", mine
+            ? { runId: run.id, runVersion: run.version }
+            : { runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version });
         }}>{pending ? "Saving…" : mine ? "Leave this group" : own ? (spaces ? "Switch to this group" : "Switch to waitlist") : spaces ? "Join this group" : "Join waitlist"}</button> : <Link className="button" href="/auth/signin">Sign in to book</Link>}
       </article>;
     })}</div>

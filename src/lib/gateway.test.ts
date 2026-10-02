@@ -43,4 +43,8 @@ describe("gateway boundary", () => {
     await expect(mutateSheet("book", {})).rejects.toMatchObject({ status: 503 });
     expect(fetcher).not.toHaveBeenCalled();
   });
+  it("treats bad server gateway credentials as service configuration failure, not member sign-out", async () => {
+    configure({ ok: false, code: "UNAUTHORIZED", message: "Invalid gateway credentials." });
+    await expect(mutateSheet("book", {})).rejects.toMatchObject({ status: 503 });
+  });
 });

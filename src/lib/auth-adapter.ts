@@ -65,7 +65,12 @@ export function sheetsAuthAdapter(): Adapter {
       await command("authDeleteUser", { id });
     },
     async linkAccount(account: AdapterAccount) {
-      await command("authLinkAccount", { account });
+      await command("authLinkAccount", {
+        account: {
+          provider: account.provider, providerAccountId: account.providerAccountId,
+          type: account.type, userId: account.userId,
+        },
+      });
     },
     async unlinkAccount(account: Pick<AdapterAccount, "provider" | "providerAccountId">) {
       await command("authUnlinkAccount", { account });

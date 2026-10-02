@@ -20,6 +20,13 @@ describe("club mutation API", () => {
     expect((await handleMutation(request("{"))).status).toBe(400);
     expect(executeMutation).not.toHaveBeenCalled();
   });
+  it("fails closed for malformed origin configuration", async () => {
+    vi.stubEnv("NEXTAUTH_URL", "javascript:invalid");
+    expect((await handleMutation(request(body, "null"))).status).toBe(403);
+    vi.stubEnv("NEXTAUTH_URL", "");
+    expect((await handleMutation(request(body))).status).toBe(403);
+    expect(executeMutation).not.toHaveBeenCalled();
+  });
   it("requires a retry ID and strips arbitrary actor fields", async () => {
     expect((await handleMutation(request({ ...body, requestId: undefined }))).status).toBe(400);
     vi.mocked(executeMutation).mockResolvedValue({} as never);

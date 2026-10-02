@@ -59,7 +59,10 @@ function authDispatch_(request) {
         const key = authAccountKey_(account);
         const existing = authRead_("AuthAccounts", key);
         if (existing && existing.data.userId !== account.userId) throw new Error("Account conflict.");
-        authWrite_("AuthAccounts", key, account);
+        authWrite_("AuthAccounts", key, {
+          provider: account.provider, providerAccountId: account.providerAccountId,
+          type: account.type, userId: account.userId,
+        });
         break;
       }
       case "authUnlinkAccount":
@@ -191,7 +194,7 @@ function authConsumeToken_(request) {
 }
 
 function authSheet_(name) {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const spreadsheet = platformSpreadsheet_();
   let sheet = spreadsheet.getSheetByName(name);
   if (!sheet) {
     sheet = spreadsheet.insertSheet(name);
@@ -230,6 +233,8 @@ function authWrite_(name, key, data) {
   const rows = authRows_(name).filter((row) => row.key === key);
   if (rows.length > 1) throw new Error("Ambiguous auth record.");
   const row = rows.length ? rows[0].row : sheet.getLastRow() + 1;
+  const maxRows = sheet.getMaxRows();
+  if (row > maxRows) sheet.insertRowsAfter(maxRows, Math.max(100, row - maxRows));
   sheet.getRange(row, 1, 1, 2).setNumberFormat("@").setValues([[key, JSON.stringify(data)]]);
   SpreadsheetApp.flush();
 }

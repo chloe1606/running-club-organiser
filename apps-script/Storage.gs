@@ -1,23 +1,40 @@
 /**
- * _PlatformState!A1 is the ONLY writable domain source. One setValue commits
- * the entire candidate, audit and request receipts atomically. Readable sheets
+ * _PlatformState!A:A is the ONLY writable domain source. A1 is the JSON manifest
+ * {schemaVersion:1,storageFormat:"chunked-v1",revision,chunkCount,length,sha256,
+ *  chunkPrefix:"data:"}.
+ * A2 onward contains <=40,000-character cells prefixed "data:" so a chunk can
+ * never execute a formula. Strip the five-character prefix; JSON text chunks
+ * never split a Unicode surrogate pair. Validate UTF-16 length and SHA-256 of the reassembled UTF-8
+ * text before parsing {schemaVersion,revision,snapshot,groupDefinitions,receipts}.
+ * ONE range.setValues writes manifest, chunks and blank padding clearing older
+ * trailing chunks together. B1 is a disposable projection recovery checkpoint.
+ * Readable sheets
  * are protected projections, repaired on every locked request after crashes.
- * Sheets cells have a 50,000-character limit: reject before 45,000 characters
- * (including history/receipts); nothing is silently pruned. This foundation is
- * for small pilots. Move to a transactional database before hitting this cap.
+ * No per-snapshot 50K cap and nothing is pruned. Only the workbook's 10-million
+ * cell grid ceiling is checked before expanding the canonical range. Large
+ * clubs must still consider Apps Script execution/memory quotas and projection
+ * costs; move to a transactional database before those become operational limits.
  *
  * Users: Email,Name,Role,User ID,Active,Version.
  * Groups: Group,Distance,Pace,Capacity,Group ID (exactly 13 master definitions).
+ * Owner setup staging projections: UserSetup has the same six Users headers;
+ * GroupDefinitions has the same five Groups headers;
+ * ClubConfiguration: Setting,Value (Location,Time Zone,Start Time,Demo Configuration).
+ * configureClubPlatform() explicitly imports UserSetup/GroupDefinitions/config only
+ * under lock after validation and backup. Existing IDs/history cannot be dropped.
  * Canonical groupDefinitions on _PlatformState is the authoritative template;
  * owner edits on protected Groups are STAGED, applied only by the backed-up
- * manual confirmClubConfiguration(). Reads/repairs discard unconfirmed edits.
+ * manual confirmClubConfiguration(). Stage during a quiet maintenance window:
+ * the next mutation/recovery may regenerate and discard unconfirmed edits.
  * createWeek copies definitions, never last week's demographics/capacity.
  * Weeks: Week ID,Date,Starts At,Booking Opens At,Booking Closes At,Status,
  *        Version,Cancellation Reason,Sheet.
- * Week_<runId> A:J: Booking ID,Week ID,Group ID,User ID,Name,Status,Source,
- *                  Booked At,Version,Email.
- * Week_<runId> L:U: Group ID,Group,Distance,Pace,Capacity,Leader ID,Sweeper ID,
- *                  Route,Route Needs Review,Version. Column K is always blank.
+ * Week_<runId> A:J: Group,Runner,Status,Booking Time,Booking ID,Week ID,
+ *                  Group ID,User ID,Source,Version.
+ * Week_<runId> L:Z: Group,Leader,Sweeper,Route Description,Distance,Pace,Capacity,
+ *                  Group ID,Week ID,Leader ID,Sweeper ID,Route Needs Review,
+ *                  Version,Confirmed,Waitlisted. Column K is always blank.
+ * Names lead the readable tables; stable IDs/version metadata support them.
  * Attendance/Audit are protected projections; legacy Archives is preserved.
  * Manual worksheet edits never override the canonical committed state.
  */
@@ -28,16 +45,40 @@ const PLATFORM_CONFIG = {
   demoConfiguration: true,
 };
 const PLATFORM_STATE_SHEET = "_PlatformState";
-const PLATFORM_STATE_LIMIT = 45000;
+const PLATFORM_CHUNK_SIZE = 39995;
+const PLATFORM_CHUNK_PREFIX = "data:";
+const PLATFORM_GRID_LIMIT = 10000000;
 
 function loadPlatformState_() {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const spreadsheet = platformSpreadsheet_();
   const sheet = spreadsheet.getSheetByName(PLATFORM_STATE_SHEET);
   const raw = sheet && sheet.getRange(1, 1).getValue();
-  if (!raw) return { schemaVersion: 0, snapshot: legacySnapshot_(), receipts: [] };
+  if (!raw) {
+    if (sheet && (sheet.getLastRow() > 1 || sheet.getRange(1, 2).getValue() !== "")) {
+      fail_("STATE_CORRUPT", "The canonical manifest is missing. Restore the administrator's backup.");
+    }
+    return { schemaVersion: 0, snapshot: legacySnapshot_(), receipts: [] };
+  }
   let state;
   try { state = JSON.parse(raw); } catch (_) { fail_("STATE_CORRUPT", "The canonical state is invalid. Restore the administrator's backup."); }
+  if (state.storageFormat === "chunked-v1") {
+    const manifest = state;
+    if (!Number.isInteger(manifest.chunkCount) || manifest.chunkCount < 1 ||
+        manifest.chunkCount + 1 > sheet.getMaxRows() || !Number.isInteger(manifest.length) || manifest.length < 1 ||
+        typeof manifest.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.sha256)) fail_("STATE_CORRUPT", "Invalid canonical manifest.");
+    const prefix = manifest.chunkPrefix === undefined ? "" : manifest.chunkPrefix;
+    if (prefix !== "" && prefix !== PLATFORM_CHUNK_PREFIX) fail_("STATE_CORRUPT", "Unsupported canonical chunk prefix.");
+    const chunks = sheet.getRange(2, 1, manifest.chunkCount, 1).getValues().map((row) => row[0]);
+    if (chunks.some((chunk) => typeof chunk !== "string" || chunk.length <= prefix.length ||
+        chunk.length > 40000 || !chunk.startsWith(prefix))) fail_("STATE_CORRUPT", "Invalid canonical chunks.");
+    const json = chunks.map((chunk) => chunk.slice(prefix.length)).join("");
+    if (json.length !== manifest.length || platformDigest_(json) !== manifest.sha256) fail_("STATE_CORRUPT", "Canonical integrity check failed. Restore the administrator's backup.");
+    try { state = JSON.parse(json); } catch (_) { fail_("STATE_CORRUPT", "Invalid canonical JSON."); }
+    if (state.revision !== manifest.revision || manifest.schemaVersion !== 1) fail_("STATE_CORRUPT", "Canonical revision mismatch.");
+  } else if (state.storageFormat) fail_("STATE_CORRUPT", "Unsupported canonical storage format.");
   if (state.schemaVersion !== 1 || !state.snapshot || !Array.isArray(state.receipts)) fail_("STATE_CORRUPT", "Unsupported canonical state.");
+  if (state.revision === undefined) state.revision = 0;
+  if (!Number.isInteger(state.revision) || state.revision < 0) fail_("STATE_CORRUPT", "Invalid canonical revision.");
   if (!state.groupDefinitions) state.groupDefinitions = defaultGroupDefinitions_();
   validateGroupDefinitions_(state.groupDefinitions);
   validatePlatform_(state.snapshot);
@@ -45,23 +86,52 @@ function loadPlatformState_() {
 }
 
 function commitPlatformState_(state) {
+  state.revision = (state.revision || 0) + 1;
   const json = JSON.stringify(state);
-  if (json.length > PLATFORM_STATE_LIMIT) fail_("STORAGE_LIMIT", "The pilot workbook is at its safe storage limit. No changes were committed; migrate to a larger transactional store.");
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const chunks = chunkPlatformJson_(json);
+  const manifest = JSON.stringify({
+    schemaVersion: 1, storageFormat: "chunked-v1", revision: state.revision,
+    chunkCount: chunks.length, length: json.length, sha256: platformDigest_(json), chunkPrefix: PLATFORM_CHUNK_PREFIX,
+  });
+  const spreadsheet = platformSpreadsheet_();
   let sheet = spreadsheet.getSheetByName(PLATFORM_STATE_SHEET);
   if (!sheet) {
     sheet = spreadsheet.insertSheet(PLATFORM_STATE_SHEET);
     protectPlatformSheet_(sheet);
     sheet.hideSheet();
   }
-  sheet.getRange(1, 1).setValue(json);
+  const rows = Math.max(chunks.length + 1, sheet.getLastRow());
+  if (rows > sheet.getMaxRows()) {
+    const additionalRows = rows - sheet.getMaxRows();
+    const cells = spreadsheet.getSheets().reduce((sum, entry) => sum + entry.getMaxRows() * entry.getMaxColumns(), 0);
+    if (cells + additionalRows * sheet.getMaxColumns() > PLATFORM_GRID_LIMIT) fail_("STORAGE_LIMIT", "The workbook is at Google Sheets' ten-million-cell grid limit. No domain changes were committed.");
+    sheet.insertRowsAfter(sheet.getMaxRows(), additionalRows);
+  }
+  const values = [[manifest]].concat(chunks.map((chunk) => [PLATFORM_CHUNK_PREFIX + chunk]));
+  while (values.length < rows) values.push([""]);
+  sheet.getRange(1, 1, rows, 1).setValues(values);
   SpreadsheetApp.flush();
+}
+function chunkPlatformJson_(json) {
+  const chunks = [];
+  for (let offset = 0; offset < json.length;) {
+    let end = Math.min(offset + PLATFORM_CHUNK_SIZE, json.length);
+    const code = json.charCodeAt(end - 1);
+    if (end < json.length && code >= 0xD800 && code <= 0xDBFF) end--;
+    chunks.push(json.slice(offset, end));
+    offset = end;
+  }
+  return chunks;
+}
+function platformDigest_(json) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, json, Utilities.Charset.UTF_8)
+    .map((byte) => ((byte + 256) % 256).toString(16).padStart(2, "0")).join("");
 }
 
 /** Run manually as an editor, never through the HTTP dispatcher. */
 function initializeClubPlatform() {
   return withLock_(() => {
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = platformSpreadsheet_();
     if (spreadsheet.getSheetByName(PLATFORM_STATE_SHEET) &&
         spreadsheet.getSheetByName(PLATFORM_STATE_SHEET).getRange(1, 1).getValue()) {
       repairProjections_(loadPlatformState_());
@@ -69,7 +139,8 @@ function initializeClubPlatform() {
     }
     if (records_("Members").length || records_("Runs").length || records_("Bookings").length ||
         records_("Groups").length || records_("Users").length || records_("Weeks").length ||
-        records_("Archives").length) {
+        records_("Archives").length || records_("UserSetup").length ||
+        records_("GroupDefinitions").length || records_("ClubConfiguration").length) {
       fail_("MIGRATION_REQUIRED", "Existing data detected. Use the backed-up legacy migration instead.");
     }
     const email = normalizeEmail_(Session.getEffectiveUser().getEmail());
@@ -95,7 +166,7 @@ function migrateLegacyPlatform() {
     const admin = existing.snapshot.members.find((entry) => entry.email === email && entry.active && entry.roles.includes("admin"));
     if (!admin) fail_("FORBIDDEN", "Run migration as an active legacy administrator.");
     validatePlatform_(existing.snapshot);
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = platformSpreadsheet_();
     const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-platform backup " + new Date().toISOString());
     if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required before migration.");
     const state = {
@@ -129,12 +200,15 @@ function confirmClubConfiguration() {
       paceLabel: String(entry.Pace || ""), capacity: Number(entry.Capacity),
     }));
     validateGroupDefinitions_(definitions);
+    if (definitions.some((entry) => !state.groupDefinitions.some((previous) => previous.number === entry.number && previous.id === entry.id))) {
+      fail_("INVALID_GROUP_DEFINITIONS", "Keep each master group's stable ID unchanged.");
+    }
     if (definitions.some((entry) => /\bDEMO\b/i.test(entry.distanceLabel + " " + entry.paceLabel)) ||
         !PLATFORM_CONFIG.location.trim() || /\bDEMO\b/i.test(PLATFORM_CONFIG.location) ||
         PLATFORM_CONFIG.timeZone !== "Europe/London" || PLATFORM_CONFIG.startTime !== "18:30") {
       fail_("UNCONFIRMED_CONFIGURATION", "Confirm the real meeting location, thirteen distance/pace definitions, Europe/London and 18:30 before applying configuration.");
     }
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheet = platformSpreadsheet_();
     const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-configuration backup " + new Date().toISOString());
     if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
     state.groupDefinitions = definitions;
@@ -147,6 +221,108 @@ function confirmClubConfiguration() {
     commitPlatformState_(state);
     repairProjections_(state);
   });
+}
+
+/**
+     * Trusted, manual initial seed/import. Run initializeClubPlatform() first, then
+     * stage a complete UserSetup roster, 13 GroupDefinitions and ClubConfiguration in
+     * a quiet maintenance window. Keep existing IDs/versions. HTTP requests never
+     * import these tables. All changes commit together after a verified backup.
+     */
+function configureClubPlatform() {
+      return withLock_(() => {
+        const state = loadPlatformState_();
+        if (state.schemaVersion !== 1) fail_("MIGRATION_REQUIRED", "Initialize or migrate the workbook first.");
+        const email = normalizeEmail_(Session.getEffectiveUser().getEmail());
+        const actor = state.snapshot.members.find((entry) => entry.email === email && entry.active && entry.roles.includes("admin"));
+        if (!actor) fail_("FORBIDDEN", "An active administrator must configure the club.");
+        const administrator = JSON.parse(JSON.stringify(actor));
+        const definitions = records_("GroupDefinitions").map((entry) => ({
+          id: String(entry["Group ID"] || ""), number: Number(entry.Group),
+          name: "Group " + entry.Group, distanceLabel: String(entry.Distance || ""),
+          paceLabel: String(entry.Pace || ""), capacity: Number(entry.Capacity),
+        }));
+        validateGroupDefinitions_(definitions);
+        if (definitions.some((entry) => !state.groupDefinitions.some((previous) => previous.number === entry.number && previous.id === entry.id))) {
+          fail_("INVALID_GROUP_DEFINITIONS", "Keep each master group's stable ID unchanged.");
+        }
+        const settings = {};
+        records_("ClubConfiguration").forEach((entry) => {
+          const key = String(entry.Setting || "");
+          if (Object.prototype.hasOwnProperty.call(settings, key)) fail_("INVALID_CONFIGURATION", "Configuration setting names must be unique.");
+          settings[key] = entry.Value;
+        });
+        const config = {
+          location: String(settings.Location || "").trim(), timeZone: String(settings["Time Zone"] || "").trim(),
+          startTime: String(settings["Start Time"] || "").trim(),
+          demoConfiguration: String(settings["Demo Configuration"]).toUpperCase() !== "FALSE",
+        };
+        if (!config.location || /\bDEMO\b/i.test(config.location) || config.timeZone !== "Europe/London" ||
+            config.startTime !== "18:30" || config.demoConfiguration ||
+            definitions.some((entry) => /\bDEMO\b/i.test(entry.distanceLabel + " " + entry.paceLabel))) {
+          fail_("UNCONFIRMED_CONFIGURATION", "Confirm the real meeting location, all thirteen distance/pace definitions, Europe/London, 18:30 and Demo Configuration FALSE.");
+        }
+        const roster = records_("UserSetup").map((entry) => {
+          const active = String(entry.Active).toUpperCase();
+          if (!["TRUE", "FALSE"].includes(active)) fail_("INVALID_MEMBER", "Each UserSetup row requires a TRUE or FALSE Active flag.");
+          const memberEmail = normalizeEmail_(entry.Email);
+          const suppliedId = String(entry["User ID"] || "").trim();
+          if (!suppliedId && state.snapshot.members.some((member) => member.email === memberEmail)) {
+            fail_("IDENTITY_CHANGE", "Keep the existing stable User ID for existing emails.");
+          }
+          return {
+            id: suppliedId || Utilities.getUuid(), email: memberEmail, name: String(entry.Name || "").trim(),
+            roles: Array.from(new Set(String(entry.Role || "").split(",").map((role) => role.trim()).filter(Boolean))),
+            active: active === "TRUE", version: entry.Version === "" || entry.Version === undefined ? 1 : Number(entry.Version),
+          };
+        });
+        if (!roster.length || roster.some((member) => !/^[a-zA-Z0-9_-]{1,120}$/.test(member.id) ||
+            !member.name || member.name.length > 100 ||
+            !Number.isInteger(member.version) || member.version < 1)) fail_("INVALID_MEMBER", "Supply a complete UserSetup roster with stable IDs, names and valid versions.");
+        if (!roster.some((member) => member.active && member.roles.includes("admin"))) fail_("LAST_ADMIN", "At least one active administrator must remain.");
+        const originalMembers = state.snapshot.members.slice();
+        originalMembers.forEach((member) => {
+          const imported = roster.find((entry) => entry.id === member.id);
+          if (!imported) fail_("MEMBER_REMOVAL", "Existing user IDs cannot be dropped. Retain the row and set Active FALSE instead.");
+          if (imported.email !== member.email) fail_("IDENTITY_CHANGE", "Existing user email identities cannot be reassigned.");
+          expectedVersion_(member, imported.version);
+        });
+        const prospective = JSON.parse(JSON.stringify(state.snapshot));
+        prospective.members = roster;
+        validatePlatform_(prospective);
+        roster.filter((member) => !originalMembers.some((entry) => entry.id === member.id)).forEach((member) => {
+          if (member.version !== 1) fail_("INVALID_MEMBER", "New user versions must start at one.");
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(member.id)) {
+            fail_("INVALID_MEMBER", "Use a UUID for a new member or leave User ID blank to generate one. Existing legacy IDs remain unchanged.");
+          }
+          if (originalMembers.some((entry) => entry.email === member.email)) fail_("IDENTITY_CHANGE", "Keep the existing stable ID for an existing email.");
+          state.snapshot.members.push(member);
+        });
+        const now = new Date();
+        originalMembers.forEach((member) => {
+          const imported = roster.find((entry) => entry.id === member.id);
+          if (member.name === imported.name && member.active === imported.active &&
+              member.roles.slice().sort().join(",") === imported.roles.slice().sort().join(",")) return;
+          mutatePlatform_(state.snapshot, {
+            operation: "updateMember", requestId: Utilities.getUuid(), email,
+            memberId: member.id, memberVersion: member.version,
+            name: imported.name, roles: imported.roles, active: imported.active,
+          }, administrator, now, state.groupDefinitions);
+        });
+        state.snapshot.config = config;
+        state.groupDefinitions = definitions;
+        validatePlatform_(state.snapshot);
+        const spreadsheet = platformSpreadsheet_();
+        const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-roster configuration backup " + now.toISOString());
+        if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
+        state.configuration = { backupId: backup.getId(), at: now.toISOString(), actorId: administrator.id };
+        state.snapshot.audit.push({
+          id: Utilities.getUuid(), runId: "", actorId: administrator.id,
+          action: "configureClubPlatform", at: now.toISOString(), requestId: Utilities.getUuid(),
+        });
+        commitPlatformState_(state);
+        repairProjections_(state);
+      });
 }
 function defaultGroupDefinitions_() {
   return Array.from({ length: 13 }, (_, index) => ({
@@ -182,16 +358,20 @@ function legacySnapshot_() {
     ...(entry.cancellationReason ? { cancellationReason: String(entry.cancellationReason) } : {}),
   }));
   const legacyGroups = records_("Legacy_Groups").length ? records_("Legacy_Groups") : records_("Groups");
-  snapshot.groups = legacyGroups.map((entry) => ({
-    id: String(entry.groupId), runId: String(entry.runId), number: Number(entry.groupNumber),
-    paceLabel: String(entry.paceLabel || "DEMO — pace to be confirmed"),
-    distanceLabel: String(entry.distanceLabel || "DEMO — distance to be confirmed"),
-    name: String(entry.name || "Group " + entry.groupNumber),
-    capacity: Math.min(19, Number(entry.capacity)), version: Number(entry.version || 1),
-    ...(entry.leaderId ? { leaderId: String(entry.leaderId) } : {}),
-    ...(entry.sweeperId ? { sweeperId: String(entry.sweeperId) } : {}),
-    routeDescription: String(entry.routeDescription || ""), routeNeedsReview: !!entry.routeDescription,
-  }));
+  snapshot.groups = legacyGroups.map((entry) => {
+    const week = snapshot.weeks.find((candidate) => candidate.id === String(entry.runId));
+    const historical = week && (["archived", "cancelled"].includes(week.status) || new Date(week.startsAt) <= new Date());
+    return {
+      id: String(entry.groupId), runId: String(entry.runId), number: Number(entry.groupNumber),
+      paceLabel: String(entry.paceLabel || "DEMO — pace to be confirmed"),
+      distanceLabel: String(entry.distanceLabel || "DEMO — distance to be confirmed"),
+      name: String(entry.name || "Group " + entry.groupNumber),
+      capacity: historical ? Number(entry.capacity) : 19, version: Number(entry.version || 1),
+      ...(entry.leaderId ? { leaderId: String(entry.leaderId) } : {}),
+      ...(entry.sweeperId ? { sweeperId: String(entry.sweeperId) } : {}),
+      routeDescription: String(entry.routeDescription || ""), routeNeedsReview: !!entry.routeDescription,
+    };
+  });
   snapshot.bookings = records_("Bookings").map((entry) => ({
     id: String(entry.bookingId), runId: String(entry.runId), groupId: String(entry.groupId), memberId: String(entry.memberId),
     status: String(entry.status), source: entry.bookingSource === "assignment" ? "assignment" : "member",
@@ -248,12 +428,12 @@ function validatePlatform_(snapshot) {
   }
   const assignments = new Set();
   snapshot.groups.forEach((group) => {
-    if (!weeks.has(group.runId) || !Number.isInteger(group.capacity) || group.capacity < 1 || group.capacity > 19 ||
+    const week = snapshot.weeks.find((entry) => entry.id === group.runId);
+    const live = week && !["archived", "cancelled"].includes(week.status) && new Date(week.startsAt) > new Date();
+    if (!weeks.has(group.runId) || !Number.isInteger(group.capacity) || group.capacity < 1 || group.capacity > (live ? 19 : 20) ||
         !Number.isInteger(group.number) || group.number < 1 || group.number > 13 ||
         typeof group.paceLabel !== "string" || !group.paceLabel.trim() ||
         !Number.isInteger(group.version) || group.version < 1) fail_("INVALID_GROUPS", "Invalid group capacity or version.");
-    const week = snapshot.weeks.find((entry) => entry.id === group.runId);
-    const live = !["archived", "cancelled"].includes(week.status);
     if (live && occupantCount_(snapshot, group) > group.capacity) fail_("GROUP_FULL", "Existing occupants exceed the nineteen-person maximum; reconcile legacy data before migration.");
     ["leader", "sweeper"].forEach((role) => {
       const id = group[role + "Id"];
@@ -288,7 +468,14 @@ function validatePlatform_(snapshot) {
 
 function repairProjections_(state) {
   try {
+    const sheet = platformSpreadsheet_().getSheetByName(PLATFORM_STATE_SHEET);
+    if (sheet && sheet.getRange(1, 2).getValue() === "projected:" + state.revision) return true;
     projectPlatform_(state);
+    // B1 is only a disposable recovery checkpoint, never an auth/schema source.
+    // It is written AFTER all projection writes have been flushed. A stale or
+    // missing checkpoint causes complete regeneration from the committed A1.
+    sheet.getRange(1, 2).setValue("projected:" + state.revision);
+    SpreadsheetApp.flush();
     return true;
   } catch (_) {
     // Canonical state is already committed. Never report a failed mutation or
@@ -297,7 +484,7 @@ function repairProjections_(state) {
   }
 }
 function projectPlatform_(state) {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const spreadsheet = platformSpreadsheet_();
   const snapshot = state.snapshot;
   const legacyGroups = spreadsheet.getSheetByName("Groups");
   if (legacyGroups && legacyGroups.getRange(1, 1, 1, legacyGroups.getLastColumn()).getValues()[0].includes("groupId")) {
@@ -310,20 +497,38 @@ function projectPlatform_(state) {
   });
   writeProjection_("Users", ["Email", "Name", "Role", "User ID", "Active", "Version"],
     snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
+  writeProjection_("UserSetup", ["Email", "Name", "Role", "User ID", "Active", "Version"],
+    snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
   writeProjection_("Weeks", ["Week ID", "Date", "Starts At", "Booking Opens At", "Booking Closes At", "Status", "Version", "Cancellation Reason", "Sheet"],
     snapshot.weeks.map((entry) => [entry.id, clubLocalDate_(new Date(entry.startsAt), snapshot.config.timeZone), entry.startsAt, entry.bookingOpensAt, entry.bookingClosesAt, entry.status, entry.version, entry.cancellationReason || "", weeklySheetName_(entry.id)]));
   writeProjection_("Groups", ["Group", "Distance", "Pace", "Capacity", "Group ID"],
     state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, 19, entry.id]));
+  writeProjection_("GroupDefinitions", ["Group", "Distance", "Pace", "Capacity", "Group ID"],
+    state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, 19, entry.id]));
+  writeProjection_("ClubConfiguration", ["Setting", "Value"], [
+    ["Location", snapshot.config.location], ["Time Zone", snapshot.config.timeZone],
+    ["Start Time", snapshot.config.startTime], ["Demo Configuration", snapshot.config.demoConfiguration],
+  ]);
   snapshot.weeks.forEach((week) => {
     const bookings = snapshot.bookings.filter((entry) => entry.runId === week.id).map((entry) => {
       const member = snapshot.members.find((candidate) => candidate.id === entry.memberId);
-      return [entry.id, entry.runId, entry.groupId, entry.memberId, member ? member.name : "", entry.status, entry.source, entry.bookedAt, entry.version, member ? member.email : ""];
+      const group = snapshot.groups.find((candidate) => candidate.id === entry.groupId);
+      return [group ? group.name || "Group " + group.number : "", member ? member.name : "", entry.status, entry.bookedAt,
+        entry.id, entry.runId, entry.groupId, entry.memberId, entry.source, entry.version];
     });
     const groups = snapshot.groups.filter((entry) => entry.runId === week.id).sort((a, b) => a.number - b.number)
-      .map((entry) => [entry.id, entry.number, entry.distanceLabel || "", entry.paceLabel, entry.capacity, entry.leaderId || "", entry.sweeperId || "", entry.routeDescription || "", !!entry.routeNeedsReview, entry.version]);
+      .map((entry) => {
+        const leader = snapshot.members.find((candidate) => candidate.id === entry.leaderId);
+        const sweeper = snapshot.members.find((candidate) => candidate.id === entry.sweeperId);
+        return [entry.name || "Group " + entry.number, leader ? leader.name : "", sweeper ? sweeper.name : "",
+          entry.routeDescription || "", entry.distanceLabel || "", entry.paceLabel, entry.capacity,
+          entry.id, entry.runId, entry.leaderId || "", entry.sweeperId || "", !!entry.routeNeedsReview, entry.version,
+          week.status === "cancelled" ? 0 : occupantCount_(snapshot, entry),
+          week.status === "cancelled" ? 0 : snapshot.bookings.filter((booking) => booking.groupId === entry.id && booking.status === "waitlisted").length];
+      });
     const sheet = writeProjection_(weeklySheetName_(week.id),
-      ["Booking ID", "Week ID", "Group ID", "User ID", "Name", "Status", "Source", "Booked At", "Version", "Email"], bookings);
-    setProjectionValues_(sheet, 1, 12, [["Group ID", "Group", "Distance", "Pace", "Capacity", "Leader ID", "Sweeper ID", "Route", "Route Needs Review", "Version"]].concat(groups));
+      ["Group", "Runner", "Status", "Booking Time", "Booking ID", "Week ID", "Group ID", "User ID", "Source", "Version"], bookings);
+    setProjectionValues_(sheet, 1, 12, [["Group", "Leader", "Sweeper", "Route Description", "Distance", "Pace", "Capacity", "Group ID", "Week ID", "Leader ID", "Sweeper ID", "Route Needs Review", "Version", "Confirmed", "Waitlisted"]].concat(groups));
   });
   writeProjection_("Attendance", ["Attendance ID", "Week ID", "Group ID", "User ID", "Outcome", "Recorded At"],
     snapshot.attendance.map((entry) => [entry.id, entry.runId, entry.groupId, entry.memberId, entry.outcome, entry.recordedAt]));
@@ -332,7 +537,7 @@ function projectPlatform_(state) {
   SpreadsheetApp.flush();
 }
 function writeProjection_(name, headers, rows) {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const spreadsheet = platformSpreadsheet_();
   const sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
   protectPlatformSheet_(sheet);
   sheet.clearContents();
@@ -363,7 +568,7 @@ function weeklySheetName_(runId) {
   return "Week_" + String(runId).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
 }
 function records_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = platformSpreadsheet_().getSheetByName(sheetName);
   if (!sheet) return [];
   const values = sheet.getDataRange().getValues();
   const headers = values.shift() || [];

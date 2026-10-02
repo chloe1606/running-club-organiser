@@ -63,8 +63,19 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
           id: `attendance-${id}`, runId: run.id, groupId, memberId,
           outcome: (b + w) % 9 === 0 ? "absent" : "present", recordedAt: run.startsAt,
         });
+        if (!w && b >= occupancy) snapshot.audit.push({
+          id: `seed-joined-${id}`, actorId: memberId, memberId, runId: run.id, groupId, action: "waitlistJoined",
+          at: new Date(new Date(run.bookingOpensAt).getTime() + b * 60000).toISOString(), requestId: `synthetic-${id}`, queueSize: b - occupancy + 1,
+        });
+        if (w && g % 4 === 2 && b === 5) {
+          snapshot.audit.push(
+            { id: `seed-joined-${id}`, actorId: memberId, memberId, runId: run.id, groupId, action: "waitlistJoined", at: new Date(new Date(run.bookingOpensAt).getTime() + b * 60000).toISOString(), requestId: `synthetic-join-${id}`, queueSize: 1 },
+            { id: `seed-promoted-${id}`, actorId: "demo-admin", memberId, runId: run.id, groupId, action: "promoted", at: new Date(new Date(run.bookingOpensAt).getTime() + 3600000).toISOString(), requestId: `synthetic-promote-${id}`, queueSize: 0 },
+          );
+        }
       });
     }
   }
+  snapshot.audit.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
   return snapshot;
 }

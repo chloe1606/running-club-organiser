@@ -54,6 +54,23 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
   const group = next.groups.find(g => g.id === payload.groupId);
   const now = new Date();
   const admin = actor.roles.includes("admin");
+  const queueEvent = (action: "waitlistJoined" | "promoted" | "withdrawn", groupId: string, memberId: string) => {
+    next.audit.unshift({ id: `demo-audit-${requestId}-${action}-${memberId}`, actorId, runId: next.groups.find(g => g.id === groupId)?.runId ?? "", groupId, memberId,
+      action, at: now.toISOString(), requestId, queueSize: next.bookings.filter(b => b.groupId === groupId && b.status === "waitlisted").length });
+  };
+  const promote = (groupId: string) => {
+    const target = next.groups.find(g => g.id === groupId)!;
+    const week = next.weeks.find(w => w.id === target.runId);
+    if (!week || !bookingIsOpen(week, now)) return;
+    while (confirmedCount(groupId, next.bookings) < target.capacity) {
+      const queued = promoteFirstWaitlisted(groupId, next.bookings);
+      if (!queued) break;
+      const member = next.members.find(m => m.id === queued.memberId);
+      queued.version++;
+      if (!member?.active || !member.roles.includes("runner")) { queued.status = "cancelled"; queueEvent("withdrawn", groupId, queued.memberId); }
+      else { queued.status = "confirmed"; queueEvent("promoted", groupId, queued.memberId); }
+    }
+  };
   const requireAdmin = () => { if (!admin) throw new GatewayError("Administrator access required.", 403, "FORBIDDEN"); };
   const requireRun = (): Run => {
     if (!run) throw new Error("Run not found.");
@@ -82,20 +99,21 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     const confirmed = old.status === "confirmed";
     old.status = "cancelled"; old.version++;
     const oldGroup = next.groups.find(g => g.id === old.groupId)!;
-    if (confirmed) {
-      const promoted = promoteFirstWaitlisted(old.groupId, next.bookings);
-      if (promoted) { promoted.status = "confirmed"; promoted.version++; }
-    }
+    if (confirmed) promote(old.groupId);
+    else queueEvent("withdrawn", old.groupId, old.memberId);
     oldGroup.version++;
   };
   const book = (memberId: string, source: "member" | "assignment" = "member") => {
     const member = eligible(memberId);
     if (source === "member" && !member.roles.includes("runner")) throw new Error("Runner role required.");
     if (source === "member") assertCanBook(run!, group!, next.bookings, memberId, now);
-    const status = nextBookingStatus(group!, next.bookings);
+    const status = source === "assignment"
+      ? (confirmedCount(group!.id, next.bookings, group) <= Math.min(group!.capacity, 19) ? "confirmed" : "waitlisted")
+      : nextBookingStatus(group!, next.bookings);
     if (source === "assignment" && status === "waitlisted") throw new Error("This group has no room for an assignment.");
     next.bookings.push({ id: `demo-booking-${requestId}-${memberId}`, runId: run!.id, groupId: group!.id,
       memberId, status, bookedAt: now.toISOString(), source, version: 1 });
+    if (status === "waitlisted") queueEvent("waitlistJoined", group!.id, memberId);
     group!.version++;
   };
   switch (operation) {
@@ -116,15 +134,21 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date || parsed.getUTCDay() !== 2) throw new Error("Choose a valid Tuesday.");
       if (next.weeks.some(w => w.id === `demo-run-${date}`)) throw new Error("This week already exists.");
       const created: Run = { id: `demo-run-${date}`, ...createRunSchedule(date, now, next.config), status: "draft", version: 1 };
-      const template = next.weeks.find(w => w.id === payload.copyFromRunId) ?? next.weeks[0];
+      const template = payload.copyFromRunId ? next.weeks.find(w => w.id === payload.copyFromRunId) : undefined;
+      if (payload.copyFromRunId && !template) throw new Error("Source week not found.");
       next.weeks.push(created);
-      for (const item of next.groups.filter(g => g.runId === template.id)) next.groups.push({ ...item, id: `${created.id}-group-${item.number}`, runId: created.id, leaderId: undefined, sweeperId: undefined, routeNeedsReview: true, version: 1 });
+      for (const definition of createDemoSnapshot(now).groups.slice(0, 13)) {
+        const copied = template ? next.groups.find(g => g.runId === template.id && g.number === definition.number) : undefined;
+        next.groups.push({ ...definition, id: `${created.id}-group-${definition.number}`, runId: created.id,
+          leaderId: undefined, sweeperId: undefined, routeDescription: copied?.routeDescription ?? "", routeNeedsReview: Boolean(copied), version: 1 });
+      }
       break;
     }
-    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); run!.status = "published"; run!.version++; break;
+    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); if (next.groups.some(g => g.runId === run!.id && g.routeNeedsReview)) throw new Error("Review copied routes before publishing."); run!.status = "published"; run!.version++; break;
     case "cancelRun": {
       requireAdmin(); requireRun();
       if (!["published", "draft"].includes(run!.status)) throw new Error("This week cannot be cancelled.");
+      if (new Date(run!.startsAt) <= now) throw new Error("Only future weeks can be cancelled.");
       const reason = String(payload.cancellationReason ?? "").trim();
       if (reason.length < 3) throw new Error("Please give a cancellation reason.");
       run!.status = "cancelled"; run!.cancellationReason = reason; run!.version++;
@@ -132,26 +156,28 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       next.groups.filter(g => g.runId === run!.id).forEach(g => { g.version++; });
       break;
     }
-    case "archiveRun": requireAdmin(); requireRun(); if (new Date(run!.startsAt) > now && run!.status !== "cancelled") throw new Error("Only completed or cancelled weeks can be archived."); run!.status = "archived"; run!.version++; break;
+    case "archiveRun": requireAdmin(); requireRun(); if (run!.status === "cancelled" || run!.status === "draft" || run!.status === "archived" || new Date(run!.startsAt) > now) throw new Error("Only completed published weeks can be archived; cancelled weeks remain cancelled."); run!.status = "archived"; run!.version++; break;
     case "updateRoute":
       requireLeader();
       if (!["draft", "published"].includes(run!.status)) throw new Error("This week is not editable.");
+      if (new Date(run!.startsAt) <= now) throw new Error("Only future routes can be edited.");
       if (String(payload.routeDescription ?? "").trim().length < 3) throw new Error("Enter a route description.");
       group!.routeDescription = String(payload.routeDescription).trim(); group!.routeNeedsReview = false; group!.version++; break;
     case "assignLeader":
     case "assignSweeper": {
       if (operation === "assignLeader") { requireAdmin(); requireGroup(); } else requireLeader();
       if (!["draft", "published"].includes(run!.status)) throw new Error("This week is not editable.");
+      if (new Date(run!.startsAt) <= now) throw new Error("Only future assignments can be edited.");
       const id = String(payload.memberId ?? "");
       if (operation === "assignLeader" && (!id || !eligible(id).roles.includes("leader"))) throw new Error("Choose an active leader.");
       if (id && !eligible(id).roles.includes(operation === "assignLeader" ? "leader" : "sweeper")) throw new Error("Choose a member with the appropriate volunteer role.");
       const field = operation === "assignLeader" ? "leaderId" : "sweeperId";
+      const otherField = operation === "assignLeader" ? "sweeperId" : "leaderId";
       const previous = group![field];
-      if (id && (operation === "assignLeader" ? group!.sweeperId : group!.leaderId) === id) throw new Error("Leader and sweeper must be different members.");
       if (previous === id) break;
       const existing = id ? next.bookings.find(b => b.runId === run!.id && b.memberId === id && b.status !== "cancelled") : undefined;
       if (existing && existing.groupId !== group!.id) throw new Error("This member already occupies another group.");
-      if (previous) {
+      if (previous && group![otherField] !== previous) {
         const old = next.bookings.find(b => b.runId === run!.id && b.memberId === previous && b.source === "assignment" && b.status !== "cancelled");
         if (old) { old.status = "cancelled"; old.version++; }
       }
@@ -160,16 +186,13 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
         if (existing.status !== "confirmed" && confirmedCount(group!.id, next.bookings) >= group!.capacity) throw new Error("This group has no room for an assignment.");
         existing.status = "confirmed"; existing.source = "assignment"; existing.version++;
       } else if (id) book(id, "assignment");
-      if (confirmedCount(group!.id, next.bookings) < group!.capacity) {
-        const promoted = promoteFirstWaitlisted(group!.id, next.bookings);
-        if (promoted) { promoted.status = "confirmed"; promoted.version++; }
-      }
+      promote(group!.id);
       group!.version++;
       break;
     }
     case "recordAttendance": {
       requireLeader();
-      if (new Date(run!.startsAt) > now || run!.status === "cancelled") throw new Error("Attendance is available after the run starts.");
+      if (new Date(run!.startsAt) > now || ["cancelled", "archived", "draft"].includes(run!.status)) throw new Error("Attendance is available after a published run starts, before archival.");
       const id = String(payload.memberId);
       if (!next.bookings.some(b => b.groupId === group!.id && b.memberId === id && b.status === "confirmed")) throw new Error("This member is not confirmed in the group.");
       if (payload.outcome !== "present" && payload.outcome !== "absent") throw new Error("Choose present or absent.");
@@ -181,6 +204,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       requireAdmin();
       const m = next.members.find(m => m.id === payload.memberId);
       if (!m) throw new Error("Member not found.");
+      if (payload.memberVersion !== m.version) throw new GatewayError("This member changed. Refresh and try again.", 409, "STALE_VERSION");
       const roles = payload.roles;
       if (!Array.isArray(roles) || roles.length === 0 || roles.some(r => !["runner", "leader", "sweeper", "admin"].includes(r))) throw new Error("Choose valid member roles.");
       if (typeof payload.active !== "boolean" || !String(payload.name ?? "").trim()) throw new Error("A name and active status are required.");
@@ -191,7 +215,19 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
         return (g.leaderId === m.id && (!payload.active || !roles.includes("leader"))) ||
           (g.sweeperId === m.id && (!payload.active || !roles.includes("sweeper")));
       })) throw new Error("Replace this member’s future volunteer assignment before changing eligibility.");
-      m.name = String(payload.name).trim(); m.roles = roles; m.active = payload.active; m.version++; break;
+      m.name = String(payload.name).trim(); m.roles = roles; m.active = payload.active; m.version++;
+      if (!m.active || !m.roles.includes("runner")) {
+        const affected = new Set<string>();
+        for (const booking of next.bookings.filter(b => b.memberId === m.id && b.source === "member" && b.status !== "cancelled")) {
+          const week = next.weeks.find(w => w.id === booking.runId);
+          if (!week || new Date(week.startsAt) <= now || !["draft", "published"].includes(week.status)) continue;
+          const waiting = booking.status === "waitlisted";
+          booking.status = "cancelled"; booking.version++; affected.add(booking.groupId);
+          if (waiting) queueEvent("withdrawn", booking.groupId, booking.memberId);
+        }
+        for (const id of affected) { promote(id); next.groups.find(g => g.id === id)!.version++; }
+      }
+      break;
     }
     default: throw new Error("Unknown operation.");
   }

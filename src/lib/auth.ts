@@ -9,6 +9,32 @@ import { findActiveMemberByEmail } from "./sheets";
 const adapter = sheetsAuthAdapter();
 const LINK_SECONDS = 15 * 60;
 
+export function smtpTransportOptions(value: string, production = process.env.NODE_ENV === "production") {
+  const url = new URL(value);
+  if (!["smtp:", "smtps:"].includes(url.protocol) || !url.hostname ||
+      url.search || url.hash || (url.pathname && url.pathname !== "/")) {
+    throw new Error("Invalid SMTP configuration.");
+  }
+  const secure = url.protocol === "smtps:";
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const localTest = !production && ["localhost", "127.0.0.1", "::1"].includes(host);
+  return {
+    host,
+    port: url.port ? Number(url.port) : secure ? 465 : 587,
+    secure,
+    ignoreTLS: false,
+    requireTLS: !secure && !localTest,
+    tls: { rejectUnauthorized: true },
+    ...(url.username || url.password ? {
+      auth: { user: decodeURIComponent(url.username), pass: decodeURIComponent(url.password) },
+    } : {}),
+    disableFileAccess: true,
+    disableUrlAccess: true,
+    logger: false,
+    debug: false,
+  };
+}
+
 function siteUrl(): URL | null {
   try {
     const url = new URL(process.env.NEXTAUTH_URL ?? "");
@@ -20,15 +46,25 @@ function siteUrl(): URL | null {
   }
 }
 
+export function isAuthSessionConfigured() {
+  return Boolean(process.env.NEXTAUTH_SECRET && siteUrl());
+}
+
 export function getAuthAvailability() {
+  let smtp = false;
+  try {
+    smtp = Boolean(process.env.EMAIL_SERVER && smtpTransportOptions(process.env.EMAIL_SERVER));
+  } catch {
+    smtp = false;
+  }
   const common = Boolean(
-    process.env.NEXTAUTH_SECRET && siteUrl() && process.env.GOOGLE_SHEET_ID &&
+    isAuthSessionConfigured() && process.env.GOOGLE_SHEET_ID &&
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.APPS_SCRIPT_GATEWAY_URL &&
     process.env.APPS_SCRIPT_GATEWAY_SECRET,
   );
   return {
     google: common && Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-    email: common && Boolean(process.env.EMAIL_SERVER && process.env.EMAIL_FROM),
+    email: common && smtp && Boolean(process.env.EMAIL_FROM),
   };
 }
 
@@ -70,9 +106,8 @@ export const authOptions: NextAuthOptions = {
           const hash = createHash("sha256").update(`${token}${provider.secret ?? process.env.NEXTAUTH_SECRET!}`).digest("hex");
           const allowed = await prepareEmailToken({ identifier, token: hash, expires });
           if (!allowed) return;
-          const transport = createTransport(provider.server, {
-            disableFileAccess: true, disableUrlAccess: true,
-          });
+          if (typeof provider.server !== "string") throw new Error("Invalid SMTP configuration.");
+          const transport = createTransport(smtpTransportOptions(provider.server));
           try {
             await transport.sendMail({
               to: normalizeAuthEmail(identifier), from: provider.from,

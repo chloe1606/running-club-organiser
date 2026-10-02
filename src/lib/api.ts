@@ -11,9 +11,12 @@ export function errorResponse(error: unknown) {
 }
 
 export function sameOrigin(request: Request) {
-  const expected = new URL(process.env.NEXTAUTH_URL ?? request.url).origin;
-  return request.headers.get("origin") === expected &&
-    request.headers.get("sec-fetch-site") !== "cross-site";
+  try {
+    const expected = new URL(process.env.NEXTAUTH_URL ?? request.url);
+    if (!["https:", "http:"].includes(expected.protocol) || expected.username || expected.password) return false;
+    return request.headers.get("origin") === expected.origin &&
+      request.headers.get("sec-fetch-site") !== "cross-site";
+  } catch { return false; }
 }
 
 export async function handleMutation(request: Request, operation?: string) {

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import vm from "node:vm";
 import type { NextAuthOptions } from "next-auth";
@@ -9,12 +10,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeAuthEmail, sheetsAuthAdapter } from "./auth-adapter";
 
 const mocks = vi.hoisted(() => ({
-  mutateSheet: vi.fn(), member: vi.fn(), sendMail: vi.fn(), close: vi.fn(),
+  mutateSheet: vi.fn(), member: vi.fn(), sendMail: vi.fn(), close: vi.fn(), transport: vi.fn(),
 }));
 vi.mock("./gateway", () => ({ mutateSheet: mocks.mutateSheet }));
 vi.mock("./sheets", () => ({ findActiveMemberByEmail: mocks.member }));
 vi.mock("nodemailer", () => ({
-  createTransport: () => ({ sendMail: mocks.sendMail, close: mocks.close }),
+  createTransport: (options: unknown) => {
+    mocks.transport(options);
+    return { sendMail: mocks.sendMail, close: mocks.close };
+  },
 }));
 
 const require = createRequire(import.meta.url);
@@ -34,7 +38,9 @@ function storageHarness() {
     values: unknown[][] = [];
     hidden = false;
     protected = false;
+    maxRows = 1000;
     getRange(row: number, column: number, height = 1, width = 1) {
+      if (row + height - 1 > this.maxRows) throw new Error("Range exceeds sheet grid.");
       const range = {
         setNumberFormat: () => range,
         getValues: () => Array.from({ length: height }, (_, r) =>
@@ -56,6 +62,11 @@ function storageHarness() {
     }
     getDataRange() { return { getValues: () => this.values.map((row) => [...row]) }; }
     getLastRow() { return this.values.length; }
+    getMaxRows() { return this.maxRows; }
+    insertRowsAfter(after: number, count: number) {
+      if (after > this.maxRows) throw new Error("Insertion exceeds sheet grid.");
+      this.maxRows += count;
+    }
     getProtections() { return []; }
     protect() {
       this.protected = true;
@@ -70,15 +81,25 @@ function storageHarness() {
     hideSheet() { this.hidden = true; }
   }
   const sheets = new Map<string, Sheet>();
-  const state = { members: [{ ...member }], failLookup: false, failAfterConsume: false };
+  const state = { members: [{ ...member }], failLookup: false, failAfterConsume: false, spreadsheetId: "club-workbook" };
+  const workbook = {
+    getSheetByName: (name: string) => sheets.get(name),
+    insertSheet: (name: string) => { const sheet = new Sheet(); sheets.set(name, sheet); return sheet; },
+  };
+  const spreadsheetApp = {
+    ProtectionType: { SHEET: "SHEET" }, flush() {},
+    getActiveSpreadsheet: () => null,
+    openById: vi.fn((id: string) => {
+      if (id !== "club-workbook") throw new Error("Unexpected workbook.");
+      return workbook;
+    }),
+  };
   const context = vm.createContext({
     Date, console,
-    SpreadsheetApp: {
-      ProtectionType: { SHEET: "SHEET" }, flush() {},
-      getActiveSpreadsheet: () => ({
-        getSheetByName: (name: string) => sheets.get(name),
-        insertSheet: (name: string) => { const sheet = new Sheet(); sheets.set(name, sheet); return sheet; },
-      }),
+    SpreadsheetApp: spreadsheetApp,
+    platformSpreadsheet_: () => {
+      if (!state.spreadsheetId) throw new Error("Spreadsheet is not configured.");
+      return spreadsheetApp.openById(state.spreadsheetId);
     },
     Session: { getEffectiveUser: () => ({ getEmail: () => "owner@example.org" }) },
     loadPlatformState_: () => {
@@ -101,7 +122,7 @@ function storageHarness() {
     queue = call.then(() => undefined, () => undefined);
     return call;
   }
-  return { dispatch, state, sheets, context };
+  return { dispatch, state, sheets, context, spreadsheetApp };
 }
 
 let store: ReturnType<typeof storageHarness>;
@@ -200,6 +221,23 @@ describe("membership-restricted authentication", () => {
     await expect(adapter.createUser!({ email: member.email, emailVerified: null })).rejects.toThrow();
     expect(await adapter.getUserByEmail!(member.email)).toBeNull();
   });
+  it("persists Google account identity without unused OAuth API credentials", async () => {
+    const config = await options();
+    const params = googleParams();
+    expect(await config.callbacks!.signIn!({
+      ...params,
+      account: {
+        ...params.account, access_token: "unused-access", refresh_token: "unused-refresh",
+        id_token: "unused-id", expires_at: 123, scope: "email profile",
+      },
+    })).toBe(true);
+    const row = store.sheets.get("AuthAccounts")!.values[1];
+    expect(JSON.parse(String(row[1]))).toEqual({
+      provider: "google", providerAccountId: "google-sub", type: "oauth", userId: member.id,
+    });
+    const sent = mocks.mutateSheet.mock.calls.find(([operation]) => operation === "authLinkAccount");
+    expect(sent?.[1]).toEqual({ account: JSON.parse(String(row[1])) });
+  });
   it("only redirects to this site's origin, including protocol-relative/backslash attacks", async () => {
     const { safeAuthRedirect } = await import("./auth");
     const credentialUrl = new URL("https://club.example.org/");
@@ -222,6 +260,65 @@ describe("membership-restricted authentication", () => {
     vi.stubEnv("NEXTAUTH_URL", "");
     expect(getAuthAvailability()).toEqual({ google: false, email: false });
   });
+  it("requires verified TLS for production SMTP and rejects non-SMTP or option-bearing URLs", async () => {
+    const { smtpTransportOptions, getAuthAvailability } = await import("./auth");
+    expect(smtpTransportOptions("smtp://mail.example.org", true)).toMatchObject({
+      secure: false, requireTLS: true, ignoreTLS: false, tls: { rejectUnauthorized: true },
+      logger: false, debug: false,
+    });
+    expect(smtpTransportOptions("smtps://mail.example.org", true)).toMatchObject({
+      secure: true, port: 465, tls: { rejectUnauthorized: true },
+    });
+    expect(smtpTransportOptions("smtp://localhost:1025", true).requireTLS).toBe(true);
+    expect(smtpTransportOptions("smtp://localhost:1025", false).requireTLS).toBe(false);
+    expect(smtpTransportOptions("smtp://mail.example.org", false).requireTLS).toBe(true);
+    for (const server of ["https://mail.example.org", "file:///mail", "smtp://mail.example.org?ignoreTLS=true", "smtp://mail.example.org?tls.rejectUnauthorized=false"]) {
+      expect(() => smtpTransportOptions(server, true)).toThrow();
+      vi.stubEnv("EMAIL_SERVER", server);
+      expect(getAuthAvailability()).toEqual({ google: true, email: false });
+    }
+  });
+  it("does not transmit credentials or magic links when a production SMTP server cannot start TLS", async () => {
+    vi.useRealTimers();
+    const commands: string[] = [];
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.write("220 localhost SMTP test\r\n");
+      socket.on("data", (data) => {
+        for (const command of data.toString().trim().split("\r\n")) {
+          commands.push(command);
+          if (command.startsWith("EHLO")) socket.write("250-localhost\r\n250 AUTH PLAIN\r\n");
+          else if (command.startsWith("STARTTLS")) socket.write("454 TLS unavailable\r\n");
+          else if (command.startsWith("QUIT")) socket.end("221 Goodbye\r\n");
+          else socket.write("502 Not supported\r\n");
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("SMTP test listener unavailable.");
+    const { smtpTransportOptions } = await import("./auth");
+    const actualMailer = require("nodemailer") as typeof import("nodemailer");
+    const transport = actualMailer.createTransport({
+      ...smtpTransportOptions(`smtp://127.0.0.1:${address.port}`, true),
+      auth: { user: "test-user", pass: "test-only-password" },
+      connectionTimeout: 2000, greetingTimeout: 2000, socketTimeout: 2000,
+    });
+    try {
+      await expect(transport.sendMail({
+        from: "club@example.org", to: member.email, text: "test-only-magic-link",
+      })).rejects.toThrow();
+      expect(commands.some((command) => command.startsWith("STARTTLS"))).toBe(true);
+      expect(commands.some((command) => command.startsWith("AUTH") || command.startsWith("DATA") ||
+        command.includes("test-only-magic-link"))).toBe(false);
+    } finally {
+      transport.close();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
   it("does not log metadata containing magic links or credentials", async () => {
     const logger = (await options()).logger!;
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -232,6 +329,14 @@ describe("membership-restricted authentication", () => {
 });
 
 describe("persistent verification adapter and locked gateway", () => {
+  it("uses the trusted workbook helper in a web app with no active spreadsheet and fails closed without configuration", async () => {
+    expect(store.spreadsheetApp.getActiveSpreadsheet()).toBeNull();
+    const adapter = sheetsAuthAdapter();
+    await adapter.createVerificationToken!(token());
+    expect(store.spreadsheetApp.openById).toHaveBeenCalledWith("club-workbook");
+    store.state.spreadsheetId = "";
+    await expect(adapter.useVerificationToken!({ identifier: member.email, token: token().token })).rejects.toThrow();
+  });
   it("persists only token hashes in protected auth-only sheets and allows one concurrent redemption", async () => {
     const adapter = sheetsAuthAdapter();
     await adapter.createVerificationToken!(token());
@@ -243,6 +348,23 @@ describe("persistent verification adapter and locked gateway", () => {
     const journal = store.sheets.get("AuthEmailRequests")!;
     expect(journal.protected && journal.hidden).toBe(true);
     expect(store.sheets.has("Members")).toBe(false);
+  });
+  it("expands a full authentication journal before atomically appending another token", async () => {
+    const adapter = sheetsAuthAdapter();
+    await adapter.createVerificationToken!(token());
+    const journal = store.sheets.get("AuthEmailRequests")!;
+    while (journal.values.length < 1000) {
+      const hash = journal.values.length.toString(16).padStart(64, "0");
+      journal.values.push([`token:${hash}`, JSON.stringify({
+        identifier: "old@example.org", token: hash, expires: new Date(Date.now() - 3600_000).toISOString(),
+        createdAt: Date.now() - 7200_000, allowed: false, consumed: null,
+      })]);
+    }
+    vi.advanceTimersByTime(60_000);
+    await adapter.createVerificationToken!(token("b"));
+    expect(journal.getMaxRows()).toBe(1100);
+    expect(journal.values).toHaveLength(1001);
+    expect(await adapter.useVerificationToken!({ identifier: member.email, token: token("b").token })).not.toBeNull();
   });
   it("does not replay after an acknowledgement failure following a durable consume", async () => {
     const adapter = sheetsAuthAdapter();
@@ -310,6 +432,30 @@ describe("persistent verification adapter and locked gateway", () => {
 });
 
 describe("direct NextAuth email endpoints", () => {
+  it("keeps real NextAuth JWT session, CSRF and signout working with no configured providers", async () => {
+    const config = { ...await options(), providers: [] };
+    const { encode } = await import("next-auth/jwt");
+    const jwt = await encode({
+      secret: config.secret!, token: { sub: member.id, email: member.email, name: member.name },
+      maxAge: 3600,
+    });
+    const sessionCookie = "__Secure-next-auth.session-token";
+    const session = await AuthHandler({
+      options: config, req: { action: "session", method: "GET", cookies: { [sessionCookie]: jwt } },
+    });
+    expect(session.body).toMatchObject({ user: { email: member.email } });
+    const csrf = await AuthHandler({ options: config, req: { action: "csrf", method: "GET" } });
+    const signout = await AuthHandler({
+      options: config,
+      req: {
+        action: "signout", method: "POST",
+        cookies: { ...Object.fromEntries(csrf.cookies!.map((cookie) => [cookie.name, cookie.value])), [sessionCookie]: jwt },
+        body: { csrfToken: csrf.body!.csrfToken, callbackUrl: "/" },
+      },
+    });
+    expect(signout.redirect).toBe("https://club.example.org/");
+    expect(signout.cookies?.find((cookie) => cookie.name === sessionCookie)?.value).toBe("");
+  });
   it("shares persistent cooldown with UI requests; parallel adapter/send cannot bypass it", async () => {
     const config = await options();
     const responses = await Promise.all(Array.from({ length: 4 }, () => requestEmail(config, member.email)));
@@ -318,6 +464,9 @@ describe("direct NextAuth email endpoints", () => {
     const verifyPage = await AuthHandler({ options: config, req: { action: "verify-request", method: "GET" } });
     expect(verifyPage.redirect).toContain("/auth/check-inbox");
     expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+    expect(mocks.transport).toHaveBeenCalledWith(expect.objectContaining({
+      secure: false, requireTLS: true, ignoreTLS: false, tls: { rejectUnauthorized: true },
+    }));
     const entries = store.sheets.get("AuthEmailRequests")!.values.slice(1).map((row) => JSON.parse(String(row[1])));
     expect(entries).toHaveLength(4);
     expect(entries.filter((entry) => entry.allowed)).toHaveLength(1);

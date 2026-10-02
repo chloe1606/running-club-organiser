@@ -24,7 +24,7 @@ Capacity is **19 confirmed people per group, including leader and optional sweep
 
 ## Authentication setup (NextAuth v4)
 
-1. Generate `NEXTAUTH_SECRET` with `openssl rand -base64 32`; keep it stable and identical across instances. The old scaffold's `AUTH_SECRET` is not the NextAuth v4 setting.
+1. Generate `NEXTAUTH_SECRET` with `openssl rand -base64 32`; keep it stable and identical across instances. This application requires that explicit setting; do not rely on the old scaffold's `AUTH_SECRET` alias.
 2. Set `NEXTAUTH_URL` to the application's canonical origin, e.g. `https://runs.example.org`; use `http://localhost:3000` locally. Callback redirects are restricted to that origin.
 3. Create a Google OAuth web client. Register `/api/auth/callback/google` on each explicitly allowed application origin as an authorized redirect URI. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A non-Gmail Google account is supported, but Google's `email_verified` must be true.
 4. Configure SMTP with `EMAIL_SERVER` (SMTP connection URL) and `EMAIL_FROM` (your verified sender). URL-encode credentials in the connection URL. Configure the sender's SPF/DKIM/DMARC with your mail provider; test spam filtering and delivery. Leaving SMTP unset disables only the email option, not otherwise configured Google sign-in.
@@ -39,7 +39,12 @@ Only trusted active membership supplies roles. Protected pages/data and mutation
 
 Keep all credentials server-only; never use `NEXT_PUBLIC_` for secrets. Set `GOOGLE_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `APPS_SCRIPT_GATEWAY_URL` and `APPS_SCRIPT_GATEWAY_SECRET`. Share only the club workbook with the service-account email using read access; the web application performs writes through Apps Script, not the browser or service account.
 
-Create a **bound** Apps Script project in the workbook and copy `apps-script/Code.gs`, `apps-script/Storage.gs` and `apps-script/Auth.gs`. Set Script Property `GATEWAY_SECRET` to a separately generated random secret and set the same value in `APPS_SCRIPT_GATEWAY_SECRET`. An unset secret fails closed. Deploy a Web App executing as the workbook owner. The Next.js server must be able to reach its HTTPS `/exec` URL; plaintext gateway URLs are rejected. If your Workspace can provide authenticated access, restrict it accordingly; a public gateway must still reject every request lacking the shared secret. Never expose that secret in client code.
+Create a **bound** Apps Script project in the workbook, use the V8 runtime, and copy `apps-script/Code.gs`, `apps-script/Storage.gs` and `apps-script/Auth.gs`. In Project Settings → Script Properties set:
+
+- `GATEWAY_SECRET`: a separately generated random secret; use the same value in `APPS_SCRIPT_GATEWAY_SECRET`.
+- `SPREADSHEET_ID`: the workbook ID; it must equal the application's `GOOGLE_SHEET_ID`. Web Apps open it explicitly with `SpreadsheetApp.openById()`—there is no active spreadsheet context in a deployed Web App.
+
+Unset settings fail closed. Authorize the owner-run setup functions for spreadsheet access, identity and workbook backup copying. Deploy a Web App executing as the workbook owner. The Next.js server must be able to reach its HTTPS `/exec` URL; plaintext gateway URLs are rejected. If your Workspace can provide authenticated access, restrict it accordingly; a public gateway must still reject every request lacking the shared secret. Never expose that secret in client code.
 
 After changing scripts, create a **new deployment version**, update the existing deployment to that version and verify the configured `/exec` URL. A source save alone does not update a deployed Web App. Protect the workbook and auth sheets from ordinary members; hidden tabs alone are not access control. Membership and booking sheets are not intended for concurrent manual editing while the service is live.
 
@@ -50,6 +55,8 @@ The adapter lazily creates `AuthUsers`, `AuthAccounts`, `AuthSessions` and `Auth
 Email request records contain only the hashed verification token, normalized identifier, expiry, issuance timestamp, eligibility and consumed marker. The persistent limit is five requests per address per hour with a 60-second resend cooldown, including denied and nonmember requests. Both provider sending and adapter persistence coordinate on the same token record under the lock. Consumption commits before returning the token; a failure afterward errs toward consuming a link rather than making replay possible. A request can therefore require a new link after an uncertain redemption failure.
 
 Keep SMTP and OAuth tokens out of logs, monitor gateway quotas and auth-record growth, and restrict backup access just as strictly as the live workbook. Membership remains separate: after canonical migration, authentication reads committed membership rather than the legacy `Members` table or lagging `Users` display projection.
+
+Next.js incoming-request logging is disabled because email callback URLs carry bearer tokens; auth responses use `Referrer-Policy: no-referrer` and are not cacheable. Also configure your hosting/reverse proxy, mail provider and observability tools to omit/redact auth query strings and request bodies. Application settings cannot sanitize a separately managed proxy's access logs.
 
 ## Booking and management rules
 
@@ -79,3 +86,9 @@ Bookings are intent; attendance is an explicitly recorded outcome, not inferred 
 - Test SMTP delivery and gateway recovery/error handling. Monitor Apps Script quotas and workbook growth.
 
 No production deployment or destructive real-workbook migration is part of this change. Credentials, sender verification, workbook permissions, club configuration and the real-service smoke checks remain owner setup responsibilities.
+
+## Verification limits
+
+Mock-backed tests and HTTP preview checks do not prove delivery or access to a live service. This session could not perform interactive browser verification because the browser tool required unavailable authorization. Automated review tooling was also unavailable, and CodeQL analysis failed; its zero-alert output is **not** a clean security scan. A supplemental read-only code review was performed. Run browser and security validation in an appropriately configured environment before production use.
+
+NextAuth remains on v4. The Next.js patch update addresses existing runtime advisories; this is not a framework migration. Nodemailer is explicitly installed for SMTP, with a package override keeping NextAuth on the same transport version. Remaining existing transitive/development advisories should be reviewed with `npm audit` rather than assuming every dependency is vulnerability-free.

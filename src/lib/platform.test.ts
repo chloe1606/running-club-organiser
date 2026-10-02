@@ -66,4 +66,23 @@ describe("server identity and role boundary", () => {
     vi.mocked(mutateSheet).mockResolvedValue({ demo: true });
     await expect(getPlatformSnapshot()).rejects.toMatchObject({ status: 502, code: "INVALID_SCHEMA" });
   });
+  it("uses the session's trusted actor and returns authoritative live state after booking", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: "RUNNER@example.com" }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
+    const snapshot = {
+      weeks: [{ id: "w", startsAt: "2026-10-06T17:30:00Z", bookingOpensAt: "2026-10-02T17:00:00Z", bookingClosesAt: "2026-10-06T16:30:00Z", status: "published", version: 2 }],
+      groups: Array.from({ length: 13 }, (_, index) => ({ id: `g${index + 1}`, runId: "w", number: index + 1, paceLabel: "DEMO", capacity: 19, version: 2 })),
+      bookings: [{ id: "b", runId: "w", groupId: "g1", memberId: "m", source: "member", status: "confirmed", bookedAt: "2026-10-02T17:00:00Z", version: 1 }],
+      members: [{ id: "m", email: member.email, name: member.displayName, roles: ["runner"], active: true, version: 1 }],
+      attendance: [], audit: [], demo: false,
+      config: { location: "DEMO", timeZone: "Europe/London", startTime: "18:30", demoConfiguration: true },
+    };
+    vi.mocked(mutateSheet).mockResolvedValueOnce({ status: "confirmed" }).mockResolvedValueOnce(snapshot);
+    const intent = { operation: "book" as const, requestId: mutation.requestId, runId: "w", groupId: "g1", runVersion: 1, groupVersion: 1 };
+    const result = await executeMutation(intent);
+    expect(mutateSheet).toHaveBeenNthCalledWith(1, "book", { ...intent, email: member.email });
+    expect(result.currentMemberId).toBe("m");
+    expect(result.bookings[0].status).toBe("confirmed");
+    expect(result.weeks[0].version).toBe(2);
+  });
 });

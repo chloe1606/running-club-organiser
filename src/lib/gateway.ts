@@ -68,7 +68,8 @@ export async function mutateSheet(
 }
 
 export function gatewayStatus(code?: string | null): number {
-  if (code === "UNAUTHORIZED") return 401;
+  // Gateway credentials belong to the server; re-signing in cannot repair them.
+  if (code === "UNAUTHORIZED") return 503;
   if (code === "FORBIDDEN") return 403;
   if (code === "NOT_FOUND") return 404;
   if (code === "RATE_LIMITED") return 429;

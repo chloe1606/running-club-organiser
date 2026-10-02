@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import type { Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
 import type { ClubMember, PlatformSnapshot } from "@/lib/platform-types";
-import { favouriteGroup, queuePosition, weeklyAnalytics } from "@/lib/analytics";
+import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics } from "@/lib/analytics";
 import { BookingGroups } from "./booking-groups";
 import { CancelRun } from "./cancel-run";
 import { SignIn, SignOut } from "./auth-controls";
@@ -33,23 +33,35 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
   const [failure, setFailure] = useState(false);
+  const uncertainRequests = useRef(new Map<string, { requestId: string; operation: string; payload: Record<string, unknown> }>());
+  const [retry, setRetry] = useState<{ operation: string; payload: Record<string, unknown> }>();
   const current = snapshot.members.find(m => m.id === snapshot.currentMemberId);
   const admin = current?.roles.includes("admin");
   const leader = current?.roles.includes("leader");
   const run = snapshot.weeks.find(r => r.id === selectedId);
   const mutate: Mutate = async (operation, payload) => {
     if (pending) return;
+    const intent = JSON.stringify([operation, Object.keys(payload).filter(key => !key.endsWith("Version")).sort().map(key => [key, payload[key]])]);
+    const existing = uncertainRequests.current.get(intent);
+    const request = existing ?? { operation, payload, requestId: crypto.randomUUID() };
+    if (!existing) uncertainRequests.current.clear();
+    uncertainRequests.current.set(intent, request);
     setPending(true); setMessage(""); setFailure(false);
     try {
       const response = await fetch("/api/platform", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation, requestId: crypto.randomUUID(), ...payload }) });
-      if (response.status === 401) { router.push("/auth/signin"); return; }
+        body: JSON.stringify({ operation: request.operation, requestId: request.requestId, ...request.payload }) });
+      if (response.status === 401) { uncertainRequests.current.delete(intent); setRetry(undefined); router.push("/auth/signin"); return; }
+      if (response.status >= 400 && response.status < 500) uncertainRequests.current.delete(intent);
       const body = await response.json();
+      if (response.status === 409 && body.data) setSnapshot(body.data);
       if (!response.ok || !body.data) throw new Error(body.message ?? body.error ?? "The change could not be saved.");
+      uncertainRequests.current.delete(intent); setRetry(undefined);
       setSnapshot(body.data);
       setMessage("Saved. Your club data is up to date.");
     } catch (error) {
-      setFailure(true); setMessage(error instanceof Error ? error.message : "Service unavailable. Please try again.");
+      const uncertain = uncertainRequests.current.has(intent);
+      setRetry(uncertain ? request : undefined);
+      setFailure(true); setMessage((error instanceof Error ? error.message : "Service unavailable.") + (uncertain ? " Save status is uncertain. Retry below to reuse the same request safely." : ""));
       // Refetch on conflict, never optimistically claim the mutation succeeded.
       try {
         const response = await fetch("/api/platform", { cache: "no-store" });
@@ -98,6 +110,7 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
       <div className="meeting"><span aria-hidden="true">↗</span><span>{snapshot.config.location || "Meeting point to be confirmed"}<br /><strong>{snapshot.config.startTime} · {snapshot.config.timeZone}</strong></span></div>
     </header>
     {message && <p className={failure ? "notice error" : "notice"} role={failure ? "alert" : "status"}>{message}</p>}
+    {retry && <p><button disabled={pending} className="secondary" onClick={() => void mutate(retry.operation, retry.payload)}>Retry last save safely</button></p>}
     {(view !== "runs" && !snapshot.currentMemberId) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/auth/signin">Sign in</Link></section> :
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
@@ -137,7 +150,7 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
     <h3>Confirmed runners · {confirmed.length}/{group.capacity}</h3>
     <ul className="roster">{confirmed.map(b => <li key={b.id}>{memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
     <h3>Waitlist · {queue.length}</h3>
-    <p>When a place opens, the first queued runner is promoted automatically. A queue place is not a confirmed booking.</p>
+    <p>When a place opens while bookings are open, the first eligible queued runner is promoted automatically. No promotions happen at or after the cutoff. A queue place is not a confirmed booking.</p>
     <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}</li>)}</ol>
     {!queue.length && <p>No one waiting.</p>}
     <p className="hint">{dateLabel(run.startsAt)} · Attendance is recorded by your assigned leader, not inferred from booking.</p>
@@ -145,20 +158,15 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
 }
 
 function LeaderGroup({ snapshot, run, group, mutate, pending }: { snapshot: PlatformSnapshot; run: Run; group: Group; mutate: Mutate; pending: boolean }) {
-  const [route, setRoute] = useState(group.routeDescription ?? "");
   const payload = { runId: run.id, groupId: group.id, runVersion: run.version, groupVersion: group.version };
   const confirmed = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "confirmed");
-  const eligible = snapshot.members.filter(m => m.active && m.roles.includes("sweeper") && m.id !== group.leaderId && (m.id === group.sweeperId || !snapshot.bookings.some(b => b.runId === run.id && b.groupId !== group.id && b.memberId === m.id && b.status !== "cancelled")));
+  const eligible = snapshot.members.filter(m => m.active && m.roles.includes("sweeper") && (m.id === group.sweeperId || !snapshot.bookings.some(b => b.runId === run.id && b.groupId !== group.id && b.memberId === m.id && b.status !== "cancelled")));
   return <article className="panel">
     <div className="section-title"><h2>Group {group.number} · {group.paceLabel}</h2><span className="badge">{confirmed.length} confirmed</span></div>
     <p>Leader: {memberName(snapshot, group.leaderId)} · {group.distanceLabel ?? "Distance to be confirmed"}</p>
-    <form onSubmit={e => { e.preventDefault(); void mutate("updateRoute", { ...payload, routeDescription: route }); }}>
-      <label htmlFor={`route-${group.id}`}>Route description {group.routeNeedsReview && "· review required"}</label>
-      <textarea id={`route-${group.id}`} required minLength={3} maxLength={4000} value={route} onChange={e => setRoute(e.target.value)} rows={3} />
-      <button disabled={pending || ["cancelled", "archived"].includes(run.status)}>Save route</button>
-    </form>
+    <RouteEditor run={run} group={group} mutate={mutate} pending={pending} />
     <label htmlFor={`sweeper-${group.id}`}>Sweeper (optional)</label>
-    <select id={`sweeper-${group.id}`} value={group.sweeperId ?? ""} disabled={pending || ["cancelled", "archived"].includes(run.status)} onChange={e => void mutate("assignSweeper", { ...payload, memberId: e.target.value })}>
+    <select id={`sweeper-${group.id}`} value={group.sweeperId ?? ""} disabled={pending || ["cancelled", "archived"].includes(run.status) || new Date(run.startsAt) <= new Date()} onChange={e => void mutate("assignSweeper", { ...payload, memberId: e.target.value })}>
       <option value="">No sweeper</option>{eligible.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
     </select>
     <h3 className="subheading">Attendance roster</h3>
@@ -166,11 +174,22 @@ function LeaderGroup({ snapshot, run, group, mutate, pending }: { snapshot: Plat
     <ul className="roster">{confirmed.map(b => {
       const outcome = snapshot.attendance.find(a => a.runId === run.id && a.memberId === b.memberId)?.outcome;
       return <li key={b.id}><span>{memberName(snapshot, b.memberId)} <span className="badge">{outcome ?? "unknown"}</span></span>
-        <div className="actions">{(["present", "absent"] as const).map(o => <button key={o} className="secondary" disabled={pending || run.status === "cancelled" || new Date(run.startsAt) > new Date()} aria-pressed={outcome === o} onClick={() => void mutate("recordAttendance", { ...payload, memberId: b.memberId, outcome: o })}>{o === "present" ? "Present" : "Absent"}</button>)}</div>
+        <div className="actions">{(["present", "absent"] as const).map(o => <button key={o} className="secondary" disabled={pending || run.status !== "published" || new Date(run.startsAt) > new Date()} aria-pressed={outcome === o} onClick={() => void mutate("recordAttendance", { ...payload, memberId: b.memberId, outcome: o })}>{o === "present" ? "Present" : "Absent"}</button>)}</div>
       </li>;
     })}</ul>
     <Link href={`/groups/${encodeURIComponent(group.id)}`}>View full group and waitlist →</Link>
   </article>;
+}
+
+function RouteEditor({ run, group, mutate, pending }: { run: Run; group: Group; mutate: Mutate; pending: boolean }) {
+  const [route, setRoute] = useState(group.routeDescription ?? "");
+  const [reviewed, setReviewed] = useState(!group.routeNeedsReview);
+  return <form onSubmit={e => { e.preventDefault(); void mutate("updateRoute", { runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, routeDescription: route }); }}>
+    <label htmlFor={`route-${group.id}`}>Group {group.number} route {group.routeNeedsReview && "· review required"}</label>
+    <textarea id={`route-${group.id}`} required minLength={3} maxLength={4000} value={route} onChange={e => setRoute(e.target.value)} rows={3} />
+    {group.routeNeedsReview && <label className="check"><input type="checkbox" required checked={reviewed} onChange={e => setReviewed(e.target.checked)} />I reviewed this route for the selected week</label>}
+    <button disabled={pending || !reviewed || ["cancelled", "archived"].includes(run.status) || new Date(run.startsAt) <= new Date()}>Save reviewed route</button>
+  </form>;
 }
 
 function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
@@ -198,8 +217,10 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
   const [moveGroup, setMoveGroup] = useState("");
   const [search, setSearch] = useState("");
   const totals = weeklyAnalytics(snapshot);
+  const popularity = groupAnalytics(snapshot);
+  const queueMetrics = waitlistAnalytics(snapshot);
+  const reviewCount = groups.filter(g => g.routeNeedsReview).length;
   const history = totals.filter(w => new Date(w.run.startsAt) <= new Date()).slice(-12);
-  const max = Math.max(1, ...history.map(w => w.present + w.absent + w.unknown));
   const totalPresent = history.reduce((n, w) => n + w.present, 0);
   const totalAbsent = history.reduce((n, w) => n + w.absent, 0);
   const totalUnknown = history.reduce((n, w) => n + w.unknown, 0);
@@ -211,13 +232,15 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
       <button disabled={pending}>Create draft week</button>
     </form><p className="hint">Copied routes need review. No runners or volunteer assignments are copied.</p>
       {run && <><div className="actions">
-        <button disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
-        <button className="secondary" disabled={pending || run.status === "archived" || (new Date(run.startsAt) > new Date() && run.status !== "cancelled")} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed / cancelled week</button>
-      </div>{["published", "draft"].includes(run.status) && <CancelRun runId={run.id} runVersion={run.version} mutate={mutate} pending={pending} />}</>}
+        <button disabled={pending || run.status !== "draft" || reviewCount > 0} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
+        <button className="secondary" disabled={pending || run.status !== "published" || new Date(run.startsAt) > new Date()} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</button>
+      </div>{["published", "draft"].includes(run.status) && new Date(run.startsAt) > new Date() && <CancelRun runId={run.id} runVersion={run.version} mutate={mutate} pending={pending} />}</>}
+      {run && ["draft", "published"].includes(run.status) && <details className="route-review"><summary>Review weekly routes · {reviewCount} need review</summary><p className="hint">Copied routes must be reviewed and saved before publication. Confirm each route is appropriate for this week.</p><div className="stack">{groups.map(g => <RouteEditor key={`${g.id}:${g.version}`} run={run} group={g} mutate={mutate} pending={pending} />)}</div></details>}
+      <p className="hint">Cancelled weeks remain cancelled permanently so the cancellation reason and history are preserved.</p>
     </section>
     {run && <section className="panel"><h2>Volunteers & runner moves</h2><p className="hint">One group per runner per week. Assigned volunteers occupy confirmed places.</p>
       <div className="assignment-grid">{groups.map(g => <label key={g.id}>Group {g.number} · {confirmedCount(g.id, snapshot.bookings)}/{g.capacity}
-        <select value={g.leaderId ?? ""} disabled={pending || !["draft", "published"].includes(run.status)} onChange={e => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId: e.target.value })}>
+        <select value={g.leaderId ?? ""} disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date()} onChange={e => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId: e.target.value })}>
           <option value="" disabled>Assign leader</option>{snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select></label>)}</div>
       <form className="inline-form" onSubmit={e => {
@@ -231,15 +254,22 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
     </section>}
     <section className="panel"><h2>Attendance, not assumptions.</h2><p>Last 12 historical weeks. Attendance rates exclude unknown outcomes; bookings are never counted as attendance.</p>
       <div className="stats"><div className="stat"><span>Recorded present</span><strong>{totalPresent}</strong></div><div className="stat"><span>Recorded absent</span><strong>{totalAbsent}</strong></div><div className="stat"><span>Unrecorded / unknown</span><strong>{totalUnknown}</strong></div></div>
-      <div className="chart" role="img" aria-label="Historical attendance by week; exact values in the table below.">{history.map(w => <div className="chart-row" key={w.run.id}><span>{dateLabel(w.run.startsAt).split(" ").slice(0, 3).join(" ")}</span><div className="chart-track"><span className="chart-present" style={{ width: `${w.present / max * 100}%` }} /><span className="chart-absent" style={{ width: `${w.absent / max * 100}%` }} /><span className="chart-unknown" style={{ width: `${w.unknown / max * 100}%` }} /></div></div>)}</div>
+      <div className="chart" role="img" aria-label="Historical attendance utilisation by week. Each full bar represents available capacity, not bookings; exact values in the table below.">{history.map(w => <div className="chart-row" key={w.run.id}><span>{dateLabel(w.run.startsAt).split(" ").slice(0, 3).join(" ")}</span><div className="chart-track"><span className="chart-present" style={{ width: `${w.capacity ? w.present / w.capacity * 100 : 0}%` }} /><span className="chart-absent" style={{ width: `${w.capacity ? w.absent / w.capacity * 100 : 0}%` }} /><span className="chart-unknown" style={{ width: `${w.capacity ? w.unknown / w.capacity * 100 : 0}%` }} /></div></div>)}</div>
       <p className="legend"><span>● Present</span><span>● Absent</span><span>● Unknown</span></p>
-      <div className="table-wrap"><table><caption>Weekly attendance and bookings</caption><thead><tr><th>Week</th><th>Confirmed</th><th>Waitlist</th><th>Present</th><th>Absent</th><th>Unknown</th><th>Attendance rate</th></tr></thead><tbody>{totals.map(w => <tr key={w.run.id}><td>{dateLabel(w.run.startsAt)}</td><td>{w.confirmed}</td><td>{w.waitlisted}</td><td>{w.present}</td><td>{w.absent}</td><td>{w.unknown}</td><td>{w.attendanceRate === undefined ? "Not recorded" : `${w.attendanceRate}%`}</td></tr>)}</tbody></table></div>
-      {run && <div className="table-wrap"><table><caption>Selected week: group demand & actual attendance</caption><thead><tr><th>Group</th><th>Confirmed / capacity</th><th>Waitlist demand</th><th>Present</th><th>Absent</th><th>Unknown</th></tr></thead><tbody>{groups.map(group => {
+      <p className="hint">100% bar width = available run capacity. The green segment is actual present ÷ capacity; unused capacity remains unfilled, and missing attendance remains unknown.</p>
+      <div className="table-wrap"><table><caption>Weekly attendance and bookings</caption><thead><tr><th>Week</th><th>Capacity</th><th>Confirmed</th><th>Waitlist</th><th>Present</th><th>Absent</th><th>Unknown</th><th>Actual attendance utilisation</th><th>Attendance rate</th></tr></thead><tbody>{totals.map(w => <tr key={w.run.id}><td>{dateLabel(w.run.startsAt)}</td><td>{w.capacity}</td><td>{w.confirmed}</td><td>{w.waitlisted}</td><td>{w.present}</td><td>{w.absent}</td><td>{w.unknown}</td><td>{w.attendanceUtilisation === undefined ? "Unknown / not recorded" : `${w.attendanceUtilisation}% (lower bound)`}</td><td>{w.attendanceRate === undefined ? "Not recorded" : `${w.attendanceRate}%`}</td></tr>)}</tbody></table></div>
+      {run && <div className="table-wrap"><table><caption>Selected week: group demand & actual attendance</caption><thead><tr><th>Group</th><th>Confirmed / capacity</th><th>Booking utilisation</th><th>Waitlist demand</th><th>Present</th><th>Actual attendance utilisation</th><th>Absent</th><th>Unknown</th></tr></thead><tbody>{groups.map(group => {
         const confirmed = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "confirmed");
         const actual = snapshot.attendance.filter(a => a.groupId === group.id);
         const known = new Set(actual.map(a => a.memberId));
-        return <tr key={group.id}><td>Group {group.number} · {group.paceLabel}</td><td>{confirmed.length} / {group.capacity}</td><td>{snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").length}</td><td>{actual.filter(a => a.outcome === "present").length}</td><td>{actual.filter(a => a.outcome === "absent").length}</td><td>{confirmed.filter(b => !known.has(b.memberId)).length}</td></tr>;
+        const present = actual.filter(a => a.outcome === "present").length;
+        return <tr key={group.id}><td>Group {group.number} · {group.paceLabel}</td><td>{confirmed.length} / {group.capacity}</td><td>{Math.round(confirmed.length / group.capacity * 100)}%</td><td>{snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").length}</td><td>{present}</td><td>{new Date(run.startsAt) > new Date() ? "Not started" : !actual.length ? "Unknown / not recorded" : `${Math.round(present / group.capacity * 100)}% (lower bound)`}</td><td>{actual.filter(a => a.outcome === "absent").length}</td><td>{confirmed.filter(b => !known.has(b.memberId)).length}</td></tr>;
       })}</tbody></table></div>}
+      <div className="table-wrap"><table><caption>Group popularity: confirmed bookings versus actual attendance</caption><thead><tr><th>Group</th><th>Confirmed bookings</th><th>Recorded present</th><th>Booking utilisation</th><th>Actual attendance utilisation</th><th>Recorded outcomes</th><th>Unknown outcomes</th></tr></thead><tbody>{popularity.map(g => <tr key={g.number}><td>Group {g.number}</td><td>{g.confirmed}</td><td>{g.present}</td><td>{g.bookingUtilisation === undefined ? "No capacity" : `${g.bookingUtilisation}%`}</td><td>{g.attendanceUtilisation === undefined ? "Unknown / not recorded" : `${g.attendanceUtilisation}% (lower bound)`}</td><td>{g.attendanceRecorded}</td><td>{g.attendanceUnknown}</td></tr>)}</tbody></table></div>
+      <p className="hint">Booking utilisation is confirmed bookings ÷ capacity across published and archived weeks. Actual attendance utilisation is recorded present ÷ completed-week capacity: a lower bound when outcomes are unknown, never a claim that unknown runners were absent. With no recorded outcomes it is unknown, not 0%. Draft and cancelled weeks are excluded.</p>
+      <h3 className="subheading">Recorded waitlist flow</h3>
+      <div className="stats"><div className="stat"><span>Waitlist joins</span><strong>{queueMetrics.joins}</strong></div><div className="stat"><span>Promotions / joins</span><strong>{queueMetrics.promotions} / {queueMetrics.joins}</strong><span>{queueMetrics.promotionRate === undefined ? "No recorded joins" : `${queueMetrics.promotionRate}% promoted`}</span></div><div className="stat"><span>Peak recorded group queue</span><strong>{queueMetrics.peakQueue ?? "Unknown"}</strong><span>{queueMetrics.withdrawals} recorded withdrawals</span></div></div>
+      <p className="hint">Recorded published/archived-week events only; draft and cancelled weeks are excluded. Promotion rate = promotions ÷ waitlist joins (not confirmed bookings). Peak is the maximum recorded individual-group queue, not an aggregate of all queues or today’s queue; unavailable history is never inferred.</p>
     </section>
     <section className="panel"><h2>Club members</h2><label>Search members<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Name or email" /></label>
       <div className="member-list">{snapshot.members.filter(m => `${m.name} ${m.email}`.toLowerCase().includes(search.toLowerCase())).map(m => <MemberEditor key={`${m.id}:${m.version}`} member={m} mutate={mutate} pending={pending} />)}</div>
