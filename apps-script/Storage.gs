@@ -39,10 +39,10 @@
  * Manual worksheet edits never override the canonical committed state.
  */
 const PLATFORM_CONFIG = {
-  location: "DEMO — confirm the club meeting location",
+  location: "Willett Recreation Ground", // or "Norman Park (Track Side)"
   timeZone: "Europe/London",
   startTime: "19:00",
-  demoConfiguration: true,
+  demoConfiguration: false,
 };
 const PLATFORM_BOOKING_CUTOFF = "18:30";
 const DEFAULT_CLUB_LOCATIONS = [

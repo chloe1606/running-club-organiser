@@ -34,7 +34,7 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
         <div className="occupancy"><span style={{ width: `${Math.min(100, count / group.capacity * 100)}%` }} /></div>
         <p>{count}/{group.capacity} confirmed · Waitlist: {waitlist}</p>
         <div className="volunteers"><p>Leader · <strong>{leader ?? (group.leaderId ? "Assigned club leader" : "To be assigned")}</strong></p><p>Sweeper · {sweeper ?? (group.sweeperId ? "Assigned club member" : "Not assigned")}</p></div>
-        {snapshot.currentMemberId && canVolunteerAsSweeper && !mine && <label className="check sweeper-opt-in"><input type="checkbox" checked={sweeperOptIn} disabled={pending || !open || spaces === 0} onChange={event => setSweeperOptIns(value => ({ ...value, [group.id]: event.target.checked }))} />Volunteer as this group’s sweeper</label>}
+        {snapshot.currentMemberId && canVolunteerAsSweeper && !mine && <label className="check sweeper-opt-in"><input type="checkbox" checked={sweeperOptIn} disabled={pending || !open || spaces === 0} onChange={event => setSweeperOptIns(value => ({ ...value, [group.id]: event.target.checked }))} />I can be this group’s sweeper</label>}
         {snapshot.currentMemberId && canVolunteerAsSweeper && sweeperOptIn && spaces === 0 && !mine && <p className="hint">Sweeper volunteers need a confirmed place; this group is full.</p>}
         <p className="route-summary">{group.routeNeedsReview ? "Route needs review" : group.routeDescription ? group.routeDescription : "Route to be confirmed"}</p>
         {snapshot.currentMemberId ? <Link className="details-link" href={`/groups/${encodeURIComponent(group.id)}`}>Route, runners & waitlist →</Link> : <Link href="/auth/signin">Sign in for group details</Link>}
