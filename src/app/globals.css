@@ -88,7 +88,7 @@ p { margin: .6rem 0; }
 .admin-dashboard { display: flex; flex-direction: column; }
 .admin-dashboard > * { width: 100%; }
 .admin-dashboard > .attendance-panel { order: 99; }
-.admin-dashboard .panel { overflow: hidden; }
+.admin-dashboard .panel { overflow: visible; }
 .admin-dashboard input, .admin-dashboard select, .admin-dashboard textarea { min-width: 0; max-width: 100%; }
 .admin-dashboard .actions { min-width: 0; }
 .admin-dashboard .actions button { max-width: 100%; white-space: normal; }
@@ -124,6 +124,26 @@ caption { text-align: left; font-weight: 700; margin-bottom: .7rem; }
 .chart-present { background: #397d51; }.chart-absent { background: #bc5549; }.chart-unknown { background: #c9ccbf; }
 .legend { display: flex; gap: 1rem; font-size: .78rem; }.legend span:nth-child(1) { color: #397d51; }.legend span:nth-child(2) { color: #a23e32; }.legend span:nth-child(3) { color: #61665a; }
 .member-list { max-height: 600px; overflow: auto; padding: .2rem; }
+.searchable-select { position: relative; display: grid; gap: .35rem; min-width: 0; }
+.searchable-select.is-open { z-index: 40; }
+.searchable-select-label { color: var(--ink); font-size: .9rem; font-weight: 700; }
+.searchable-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: .7rem; width: 100%; min-width: 0; padding: .65rem .75rem; background: #fff; border: 1px solid #aaa9a2; border-radius: 4px; color: var(--ink); font-size: .88rem; font-weight: 500; text-align: left; }
+.searchable-select-trigger:hover { background: #fffefa; border-color: #849281; }
+.searchable-select-trigger > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.searchable-select-trigger .searchable-select-placeholder { color: var(--muted); }
+.searchable-select-chevron { flex: 0 0 auto; width: .55rem; height: .55rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-.15rem) rotate(45deg); }
+.is-open .searchable-select-chevron { transform: translateY(.12rem) rotate(225deg); }
+.searchable-select-popover { position: absolute; z-index: 50; top: calc(100% + .3rem); left: 0; width: 100%; min-width: min(100%, 18rem); padding: .6rem; border: 1px solid #d4d3ca; border-radius: 6px; background: #fffefa; box-shadow: 0 10px 28px rgb(37 39 31 / 18%); }
+.searchable-select-search input { width: 100%; min-width: 0; padding: .55rem .65rem; font-size: .85rem; }
+.search-result-count { padding: .45rem .2rem .35rem; color: var(--muted); font-size: .72rem; font-weight: 500; }
+.searchable-select-options { display: grid; max-height: 15rem; overflow-y: auto; overscroll-behavior: contain; }
+.searchable-select-option { width: 100%; min-width: 0; padding: .5rem .6rem; border: 0; border-radius: 4px; background: transparent; color: var(--ink); font-size: .84rem; font-weight: 500; text-align: left; overflow-wrap: anywhere; }
+.searchable-select-option:hover, .searchable-select-option[aria-selected="true"] { background: #edf0e8; color: #354b39; }
+.searchable-select-option:focus-visible { outline: 2px solid #c39421; outline-offset: -2px; }
+.searchable-select-limit { padding: .5rem .6rem; margin: 0; color: var(--muted); font-size: .75rem; }
+.member-pagination { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .8rem; }
+.member-pagination span { color: var(--muted); font-size: .8rem; text-align: center; }
+.member-pagination button { padding: .4rem .7rem; font-size: .82rem; }
 .member-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .8rem; align-items: center; border-bottom: 1px solid var(--line); padding: 1rem 0; }
 .member-editor small { font-size: .7rem; color: var(--muted); overflow-wrap: anywhere; }
 .member-editor fieldset { min-width: 0; max-width: 100%; flex-wrap: wrap; }
@@ -230,4 +250,5 @@ th { background: #f0f1eb; }
 	.admin-dashboard .actions button { width: 100%; }
 	.admin-dashboard .stats { grid-template-columns: minmax(0, 1fr); }
 	.admin-dashboard .member-editor { grid-template-columns: minmax(0, 1fr); }
+	.member-pagination button { flex: 0 0 auto; }
 }

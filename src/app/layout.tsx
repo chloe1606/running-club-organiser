@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Petts Wood Runners Tuesday Club Runs",
-  description: "Book and manage your Petts Wood Runners Tuesday club run.",
+  title: "PETTS WOOD RUNNERS Tuesday Club Runs",
+  description: "Book and manage your PETTS WOOD RUNNERS Tuesday club run.",
 };
 
 export default function RootLayout({

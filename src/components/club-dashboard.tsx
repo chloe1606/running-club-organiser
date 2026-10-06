@@ -13,6 +13,7 @@ import { SignIn, SignOut } from "./auth-controls";
 import { ClubBrand } from "./club-brand";
 import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "@/lib/locations";
 import { RouteDescription } from "./route-description";
+import { SearchableSelect } from "./searchable-select";
 
 export type Mutate = (operation: string, payload: Record<string, unknown>) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
@@ -102,9 +103,9 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
       <ClubBrand />
       <div className="nav-links">
         <Link href="/">Runs</Link>
-        {snapshot.currentMemberId && <Link href="/profile">My running</Link>}
-        {(leader || admin) && <Link href="/leader">Leader workspace</Link>}
-        {admin && <Link href="/admin">Club admin</Link>}
+        {snapshot.currentMemberId && <Link href="/profile">My Running</Link>}
+        {(leader || admin) && <Link href="/leader">Leader Workspace</Link>}
+        {admin && <Link href="/admin">Club Admin</Link>}
         {!snapshot.demo && (snapshot.currentMemberId ? <SignOut /> : <SignIn />)}
       </div>
     </nav>
@@ -146,7 +147,7 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
         </section>}
         {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} />}
       </>}
-    <footer className="site-footer"><strong>Better together.</strong><span>Petts Wood Runners Tuesday Club Runs</span></footer>
+    <footer className="site-footer"><strong>Better together.</strong><span>PETTS WOOD RUNNERS Tuesday Club Runs</span></footer>
   </main>;
 }
 
@@ -215,6 +216,7 @@ function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
 }
 
 function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformSnapshot; run?: Run; groups: Group[]; mutate: Mutate; pending: boolean }) {
+  const memberPageSize = 25;
   const configuredLocations = snapshot.config.locations?.length ? snapshot.config.locations : DEFAULT_LOCATIONS;
   const locationOptions = [...new Set([...configuredLocations, ...(snapshot.config.location && !/\bDEMO\b/i.test(snapshot.config.location) ? [snapshot.config.location] : [])])]
     .filter(location => location.trim().toLowerCase() !== "willett rec");
@@ -224,6 +226,7 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
   const [moveMember, setMoveMember] = useState("");
   const [moveGroup, setMoveGroup] = useState("");
   const [search, setSearch] = useState("");
+  const [memberPage, setMemberPage] = useState(0);
   const [newLocation, setNewLocation] = useState("");
   const [newLocationMapsUrl, setNewLocationMapsUrl] = useState("");
   const initialVenueSelection = locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "";
@@ -236,6 +239,10 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
   const totalPresent = history.reduce((n, w) => n + w.present, 0);
   const totalAbsent = history.reduce((n, w) => n + w.absent, 0);
   const totalUnknown = history.reduce((n, w) => n + w.unknown, 0);
+  const filteredMembers = snapshot.members.filter(m => `${m.name} ${m.email}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const pageCount = Math.max(1, Math.ceil(filteredMembers.length / memberPageSize));
+  const currentMemberPage = Math.min(memberPage, pageCount - 1);
+  const visibleMembers = filteredMembers.slice(currentMemberPage * memberPageSize, (currentMemberPage + 1) * memberPageSize);
   function create(e: FormEvent) { e.preventDefault(); void mutate("createWeek", { date, location: newWeekLocation, ...(copy ? { copyFromRunId: copy } : {}) }); }
   function addLocation(e: FormEvent) {
     e.preventDefault();
@@ -296,10 +303,13 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
       </details>
     </section>}
     {run && <section className="panel"><h2>Volunteers</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
-      <div className="assignment-grid">{groups.map(g => <label key={g.id}>Group {g.number} · {confirmedCount(g.id, snapshot.bookings)}/{g.capacity}
-        <select value={g.leaderId ?? ""} disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date()} onChange={e => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId: e.target.value })}>
-          <option value="" disabled>Assign leader</option>{snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-        </select></label>)}</div>
+      <div className="assignment-grid">{groups.map(g => <SearchableSelect key={g.id}
+        label={`Group ${g.number} · ${confirmedCount(g.id, snapshot.bookings)}/${g.capacity} · Leader`}
+        value={g.leaderId ?? ""} placeholder="Assign leader"
+        options={snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => ({ value: m.id, label: m.name }))}
+        disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date()}
+        onChange={memberId => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId })}
+      />)}</div>
     </section>}
     {run && <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Runner moves</summary>
@@ -307,8 +317,13 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
         e.preventDefault(); const destination = groups.find(g => g.id === moveGroup);
         if (destination) void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember });
       }}>
-        <label>Runner<select required value={moveMember} onChange={e => setMoveMember(e.target.value)}><option value="">Select runner</option>{snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && b.source !== "assignment").map(b => <option key={b.id} value={b.memberId}>{memberName(snapshot, b.memberId)}</option>)}</select></label>
-        <label>Destination<select required value={moveGroup} onChange={e => setMoveGroup(e.target.value)}><option value="">Select group</option>{groups.map(g => <option key={g.id} value={g.id}>Group {g.number} · {g.paceLabel}</option>)}</select></label>
+        <SearchableSelect label="Runner" value={moveMember} placeholder="Select runner"
+          options={snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && b.source !== "assignment")
+            .map(b => ({ value: b.memberId, label: memberName(snapshot, b.memberId) }))}
+          onChange={setMoveMember} />
+        <SearchableSelect label="Destination" value={moveGroup} placeholder="Select group"
+          options={groups.map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
+          onChange={setMoveGroup} />
         <button disabled={pending || !bookingIsOpen(run, new Date())}>Move runner</button>
       </form></div>
     </details></section>}
@@ -336,8 +351,14 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
     </details></section>
     <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Club members</summary>
-      <div className="disclosure-content"><label>Search members<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Name or email" /></label>
-        <div className="member-list">{snapshot.members.filter(m => `${m.name} ${m.email}`.toLowerCase().includes(search.toLowerCase())).map(m => <MemberEditor key={`${m.id}:${m.version}`} member={m} mutate={mutate} pending={pending} />)}</div>
+      <div className="disclosure-content"><label>Search members<input type="search" value={search} onChange={e => { setSearch(e.target.value); setMemberPage(0); }} placeholder="Name or email" /></label>
+        <p className="hint" role="status">{filteredMembers.length ? `Showing ${currentMemberPage * memberPageSize + 1}–${Math.min((currentMemberPage + 1) * memberPageSize, filteredMembers.length)} of ${filteredMembers.length} members` : "No members match this search."}</p>
+        <div className="member-list">{visibleMembers.map(m => <MemberEditor key={`${m.id}:${m.version}`} member={m} mutate={mutate} pending={pending} />)}</div>
+        {filteredMembers.length > memberPageSize && <nav className="member-pagination" aria-label="Member pages">
+          <button type="button" className="secondary" disabled={currentMemberPage === 0} onClick={() => setMemberPage(currentMemberPage - 1)}>Previous</button>
+          <span>Page {currentMemberPage + 1} of {pageCount}</span>
+          <button type="button" className="secondary" disabled={currentMemberPage >= pageCount - 1} onClick={() => setMemberPage(currentMemberPage + 1)}>Next</button>
+        </nav>}
       </div>
     </details>
     </section>
