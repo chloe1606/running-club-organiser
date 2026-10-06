@@ -106,18 +106,23 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     const confirmed = old.status === "confirmed";
     old.status = "cancelled"; old.version++;
     const oldGroup = next.groups.find(g => g.id === old.groupId)!;
+    if (old.source === "member" && oldGroup.sweeperId === memberId) delete oldGroup.sweeperId;
     if (confirmed) promote(old.groupId);
     else queueEvent("withdrawn", old.groupId, old.memberId);
     oldGroup.version++;
   };
-  const book = (memberId: string, source: "member" | "assignment" = "member") => {
+  const book = (memberId: string, source: "member" | "assignment" = "member", volunteerAsSweeper = false) => {
     const member = eligible(memberId);
     if (source === "member" && !member.roles.includes("runner")) throw new Error("Runner role required.");
+    if (volunteerAsSweeper && !member.roles.includes("sweeper")) throw new Error("Sweeper role required.");
     if (source === "member") assertCanBook(run!, group!, next.bookings, memberId, now);
     const status = source === "assignment"
       ? (confirmedCount(group!.id, next.bookings, group) <= Math.min(group!.capacity, 20) ? "confirmed" : "waitlisted")
       : nextBookingStatus(group!, next.bookings);
     if (source === "assignment" && status === "waitlisted") throw new Error("This group has no room for an assignment.");
+    if (volunteerAsSweeper && status !== "confirmed") throw new Error("A sweeper volunteer needs a confirmed place in the group.");
+    if (volunteerAsSweeper && group!.sweeperId && group!.sweeperId !== memberId) throw new Error("This group already has a sweeper.");
+    if (volunteerAsSweeper) group!.sweeperId = memberId;
     next.bookings.push({ id: `demo-booking-${requestId}-${memberId}`, runId: run!.id, groupId: group!.id,
       memberId, status, bookedAt: now.toISOString(), source, version: 1 });
     if (status === "waitlisted") queueEvent("waitlistJoined", group!.id, memberId);
@@ -159,7 +164,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       run!.version++;
       break;
     }
-    case "book": requireGroup(); book(actorId); break;
+    case "book": requireGroup(); book(actorId, "member", payload.sweeper === true); break;
     case "leave": requireRun(); if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed."); leave(actorId); break;
     case "switchGroup":
     case "moveRunner": {
@@ -167,7 +172,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (operation === "moveRunner") requireAdmin();
       if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed.");
       const target = operation === "moveRunner" ? String(payload.memberId) : actorId;
-      leave(target); book(target); break;
+      leave(target); book(target, "member", operation === "switchGroup" && payload.sweeper === true); break;
     }
     case "createWeek": {
       requireAdmin();

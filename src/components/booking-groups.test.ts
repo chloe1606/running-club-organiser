@@ -32,6 +32,12 @@ describe("runner group UI", () => {
     expect(html).toContain("Join waitlist");
     expect(html).toContain("Join this group");
   });
+  it("shows an optional sweeper checkbox only to a member with the sweeper role", () => {
+    const { snapshot } = fixture();
+    snapshot.members.find(member => member.id === snapshot.currentMemberId)!.roles.push("sweeper");
+    expect(render(snapshot)).toContain("Volunteer as this group’s sweeper");
+    expect(render(fixture().snapshot)).not.toContain("Volunteer as this group’s sweeper");
+  });
   it("shows the runner’s actual personal queue position, not a confirmed place", () => {
     const { snapshot, run, groups } = fixture();
     snapshot.bookings.push({
@@ -45,6 +51,12 @@ describe("runner group UI", () => {
     expect(html).toContain("Switch to this group");
     expect(html).toContain("Switch to waitlist");
     expect(html).not.toContain("Join this group");
+  });
+  it("offers optional sweeper volunteering only to members with the sweeper role", () => {
+    const { snapshot } = fixture();
+    snapshot.members.find(member => member.id === snapshot.currentMemberId)!.roles.push("sweeper");
+    expect(render(snapshot)).toContain("Volunteer as this group’s sweeper");
+    expect(render(fixture().snapshot)).not.toContain("Volunteer as this group’s sweeper");
   });
   it("limits public cards to summaries with sign-in links, never a roster or email", () => {
     const { snapshot } = fixture();

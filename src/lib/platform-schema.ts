@@ -109,9 +109,9 @@ const base = { requestId: z.uuid() };
 const week = { ...base, runId: id, runVersion: version };
 const group = { ...week, groupId: id, groupVersion: version };
 export const mutationSchema = z.discriminatedUnion("operation", [
-  z.object({ operation: z.literal("book"), ...group }),
+  z.object({ operation: z.literal("book"), ...group, sweeper: z.boolean().optional() }),
   z.object({ operation: z.literal("leave"), ...week }),
-  z.object({ operation: z.literal("switchGroup"), ...group }),
+  z.object({ operation: z.literal("switchGroup"), ...group, sweeper: z.boolean().optional() }),
   z.object({ operation: z.literal("moveRunner"), ...group, memberId: id }),
   z.object({ operation: z.literal("createWeek"), ...base, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), copyFromRunId: id.optional(), location: z.string().trim().min(1).max(120).optional() }),
   z.object({ operation: z.literal("updateWeekLocation"), ...week, location: z.string().trim().min(1).max(120) }),

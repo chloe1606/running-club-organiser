@@ -48,6 +48,18 @@ describe("snapshot integrity", () => {
       memberId: "m", memberVersion: 1, name: "Runner", roles: ["owner"], active: true,
     }).success).toBe(false);
   });
+  it("accepts optional boolean sweeper choices on runner booking mutations", () => {
+    const base = { requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };
+    expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: true }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "switchGroup", ...base, sweeper: false }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: "yes" }).success).toBe(false);
+  });
+  it("accepts an optional boolean sweeper choice on runner booking mutations", () => {
+    const base = { requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };
+    expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: true }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "switchGroup", ...base, sweeper: false }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: "yes" }).success).toBe(false);
+  });
   it("accepts admin location updates with unique saved venues", () => {
     const base = { operation: "updateLocations", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", location: "Willett Recreation Ground", locations: ["Willett Recreation Ground"] };
     expect(mutationSchema.safeParse(base).success).toBe(true);

@@ -339,6 +339,41 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ operation: "switchGroup", groupId: "g2" })).toMatchObject({ ok: false, code: "ASSIGNMENT_EXISTS" });
     expect(app.state()).toEqual(initial);
   });
+  it("books a runner as sweeper atomically and clears the volunteer role when they leave", () => {
+    const initial = fixture();
+    initial.members.find((member) => member.id === "one")!.roles.push("sweeper");
+    const app = harness(initial);
+    expect(app.mutate({ sweeper: true })).toMatchObject({ ok: true, data: { status: "confirmed" } });
+    expect(app.state().groups.find((group) => group.id === "g1")?.sweeperId).toBe("one");
+    expect(app.state().bookings.find((entry) => entry.memberId === "one")?.status).toBe("confirmed");
+    expect(app.mutate({
+      operation: "leave", requestId: requestId(2), runVersion: 2,
+      groupId: "g1", groupVersion: 2,
+    })).toMatchObject({ ok: true, data: { status: "cancelled" } });
+    expect(app.state().groups.find((group) => group.id === "g1")?.sweeperId).toBeUndefined();
+  });
+  it("clears a self-volunteered sweeper role when switching groups", () => {
+    const initial = fixture();
+    initial.members.find((member) => member.id === "one")!.roles.push("sweeper");
+    const app = harness(initial);
+    expect(app.mutate({ sweeper: true })).toMatchObject({ ok: true, data: { status: "confirmed" } });
+    expect(app.post({
+      operation: "switchGroup", email: "one@example.org", requestId: requestId(2),
+      runId: "run", runVersion: 2, groupId: "g2", groupVersion: 1, sweeper: false,
+    })).toMatchObject({ ok: true, data: { status: "confirmed" } });
+    expect(app.state().groups.find((group) => group.id === "g1")?.sweeperId).toBeUndefined();
+    expect(app.state().groups.find((group) => group.id === "g2")?.sweeperId).toBeUndefined();
+    expect(app.state().bookings.filter((booking) => booking.memberId === "one" && booking.status !== "cancelled")).toMatchObject([
+      { groupId: "g2", status: "confirmed" },
+    ]);
+  });
+  it("rejects sweeper opt-in without the role or a confirmed group place", () => {
+    expect(harness(fixture()).mutate({ sweeper: true })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+    const full = fixture();
+    full.members.find((member) => member.id === "one")!.roles.push("sweeper");
+    full.bookings.push(booking("occupies-group", "admin", "g1"));
+    expect(harness(full).mutate({ sweeper: true })).toMatchObject({ ok: false, code: "GROUP_FULL" });
+  });
   it("counts leader/sweeper occupants once, blocks assignment overflow and duplicate groups", () => {
     const initial = fixture();
     const app = harness(initial);

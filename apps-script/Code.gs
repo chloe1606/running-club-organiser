@@ -227,10 +227,16 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         const original = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
         if (operation === "book" && original) fail_("DUPLICATE_BOOKING", "You already have a booking for this run.");
         if (operation !== "book" && !original) fail_("NOT_FOUND", "There is no active booking to change.");
-        if ((original && original.source === "assignment") ||
-            snapshot.groups.some((entry) => entry.runId === run.id && (entry.leaderId === memberId || entry.sweeperId === memberId))) fail_("ASSIGNMENT_EXISTS", "An administrator must remove the assignment before this runner can change groups.");
+        const isLeader = snapshot.groups.some((entry) => entry.runId === run.id && entry.leaderId === memberId);
+        const sweeperGroup = snapshot.groups.find((entry) => entry.runId === run.id && entry.sweeperId === memberId);
+        const ownsSweeperVolunteerRole = Boolean(original && original.source === "member" && sweeperGroup?.id === original.groupId);
+        if ((original && original.source === "assignment") || isLeader || (sweeperGroup && !ownsSweeperVolunteerRole)) {
+          fail_("ASSIGNMENT_EXISTS", "An administrator must remove the assignment before this runner can change groups.");
+        }
+        if (request.sweeper === true && !member.roles.includes("sweeper")) fail_("FORBIDDEN", "An active sweeper role is required to volunteer.");
         if (operation === "leave") {
           if (original.groupId !== group.id) fail_("WRONG_GROUP", "The booking is not in this group.");
+          if (group.sweeperId === memberId && original.source === "member") delete group.sweeperId;
           cancelBooking_(snapshot, original, auditContext);
           promoteQueue_(snapshot, group, now, auditContext);
           result = { status: "cancelled" };
@@ -241,13 +247,20 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
           if (original) {
             const source = snapshot.groups.find((entry) => entry.id === original.groupId);
             if (request.sourceGroupVersion !== undefined) expectedVersion_(source, request.sourceGroupVersion);
+            if (source.sweeperId === memberId && original.source === "member") delete source.sweeperId;
             cancelBooking_(snapshot, original, auditContext);
             promoteQueue_(snapshot, source, now, auditContext);
             touched.add(source.id);
           }
+          if (request.sweeper === true && group.sweeperId && group.sweeperId !== memberId) {
+            fail_("ASSIGNMENT_EXISTS", "This group already has a sweeper.");
+          }
+          const status = occupantCount_(snapshot, group) < group.capacity ? "confirmed" : "waitlisted";
+          if (request.sweeper === true && status !== "confirmed") fail_("GROUP_FULL", "A sweeper volunteer needs a confirmed place in the group.");
+          if (request.sweeper === true) group.sweeperId = memberId;
           const booking = {
             id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId,
-            status: occupantCount_(snapshot, group) < group.capacity ? "confirmed" : "waitlisted",
+            status,
             source: "member", bookedAt: now.toISOString(), version: 1,
           };
           snapshot.bookings.push(booking);

@@ -170,15 +170,10 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
 function LeaderGroup({ snapshot, run, group, mutate, pending }: { snapshot: PlatformSnapshot; run: Run; group: Group; mutate: Mutate; pending: boolean }) {
   const payload = { runId: run.id, groupId: group.id, runVersion: run.version, groupVersion: group.version };
   const confirmed = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "confirmed");
-  const eligible = snapshot.members.filter(m => m.active && m.roles.includes("sweeper") && (m.id === group.sweeperId || !snapshot.bookings.some(b => b.runId === run.id && b.groupId !== group.id && b.memberId === m.id && b.status !== "cancelled")));
   return <article className="panel">
     <div className="section-title"><h2>Group {group.number} · {group.paceLabel}</h2><span className="badge">{confirmed.length} confirmed</span></div>
     <p>Leader: {memberName(snapshot, group.leaderId)} · {group.distanceLabel ?? "Distance to be confirmed"}</p>
     <RouteEditor run={run} group={group} mutate={mutate} pending={pending} />
-    <label htmlFor={`sweeper-${group.id}`}>Sweeper (optional)</label>
-    <select id={`sweeper-${group.id}`} value={group.sweeperId ?? ""} disabled={pending || ["cancelled", "archived"].includes(run.status) || new Date(run.startsAt) <= new Date()} onChange={e => void mutate("assignSweeper", { ...payload, memberId: e.target.value })}>
-      <option value="">No sweeper</option>{eligible.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-    </select>
     <h3 className="subheading">Attendance roster</h3>
     <p className="hint">Unknown means no attendance has been recorded. Record outcomes after the run starts.</p>
     <ul className="roster">{confirmed.map(b => {

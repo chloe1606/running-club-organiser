@@ -192,6 +192,23 @@ describe("isolated explicit demo", () => {
     expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-leader", memberVersion: 1, name: "Priya", roles: ["runner"], active: false }, "admin")).toThrow("assignment");
     expect(() => mutateDemo("updateMember", { requestId: randomUUID(), memberId: "demo-runner", memberVersion: 1, name: "Stale Alex", roles: ["runner"], active: true }, "admin")).toThrow("changed");
   });
+  it("lets a runner with the sweeper role opt in while booking a confirmed place", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    mutateDemo("updateMember", {
+      requestId: randomUUID(), memberId: "demo-runner", memberVersion: 1,
+      name: "Alex Morgan", roles: ["runner", "sweeper"], active: true,
+    }, "admin");
+    const before = getDemoSnapshot("admin");
+    const group = before.groups.find(g => g.runId === run.id && !g.sweeperId && confirmedCount(g.id, before.bookings) < g.capacity)!;
+    const after = mutateDemo("book", {
+      requestId: randomUUID(), runId: run.id, runVersion: run.version,
+      groupId: group.id, groupVersion: group.version, sweeper: true,
+    }, "runner");
+    expect(after.groups.find(g => g.id === group.id)?.sweeperId).toBe("demo-runner");
+    expect(after.bookings.find(b => b.runId === run.id && b.memberId === "demo-runner")).toMatchObject({
+      groupId: group.id, status: "confirmed", source: "member",
+    });
+  });
   it("cancels future ordinary bookings and promotes the queue when runner eligibility is removed", async () => {
     const { getDemoSnapshot, mutateDemo, run, group } = await setup();
     const snapshot = getDemoSnapshot("admin");
