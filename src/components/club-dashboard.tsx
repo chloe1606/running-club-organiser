@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
 import type { ClubMember, PlatformSnapshot } from "@/lib/platform-types";
-import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics } from "@/lib/analytics";
+import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeksLedBy, weeklyAnalytics } from "@/lib/analytics";
 import { BookingGroups } from "./booking-groups";
 import { CancelRun } from "./cancel-run";
 import { SignIn, SignOut } from "./auth-controls";
@@ -37,10 +37,13 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
   const router = useRouter();
   const [snapshot, setSnapshot] = useState(initial);
   const sortedWeeks = [...snapshot.weeks].sort((a, b) => b.startsAt.localeCompare(a.startsAt));
+  const leaderWeeks = [...weeksLedBy(snapshot, snapshot.currentMemberId)].sort((a, b) => b.startsAt.localeCompare(a.startsAt));
+  const availableWeeks = view === "leader" ? leaderWeeks : sortedWeeks;
   const [selectedId, setSelectedId] = useState(
     initial.groups.find(g => g.id === groupId)?.runId ??
-    [...initial.weeks].filter(r => r.status === "published" && new Date(r.startsAt) > new Date()).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.id ??
-    initial.weeks.find(r => r.status === "published")?.id ?? sortedWeeks[0]?.id ?? "",
+    [...(view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : initial.weeks)].filter(r => r.status === "published" && new Date(r.startsAt) > new Date()).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.id ??
+    (view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : initial.weeks).find(r => r.status === "published")?.id ??
+    (view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : sortedWeeks)[0]?.id ?? "",
   );
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
@@ -50,7 +53,8 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
   const current = snapshot.members.find(m => m.id === snapshot.currentMemberId);
   const admin = current?.roles.includes("admin");
   const leader = current?.roles.includes("leader");
-  const run = snapshot.weeks.find(r => r.id === selectedId);
+  const effectiveSelectedId = availableWeeks.some(week => week.id === selectedId) ? selectedId : availableWeeks[0]?.id ?? "";
+  const run = availableWeeks.find(r => r.id === effectiveSelectedId);
   const meetingLocation = run?.location ?? snapshot.config.location;
   const mutate: Mutate = async (operation, payload) => {
     if (pending) return;
@@ -129,21 +133,21 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
       view === "profile" ? <Profile snapshot={snapshot} /> : <>
         <section className="week-bar" aria-label="Selected week">
-          <label htmlFor="week">Run week<select id="week" disabled={view === "detail"} value={selectedId} onChange={e => setSelectedId(e.target.value)}>
-            {sortedWeeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt, snapshot.config.timeZone)} · {w.status}</option>)}
+          <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || (view === "leader" && !leaderWeeks.length)} value={effectiveSelectedId} onChange={e => setSelectedId(e.target.value)}>
+            {availableWeeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt, snapshot.config.timeZone)} · {w.status}</option>)}
           </select></label>
           {run && <div><span className={`badge ${run.status}`}>{run.status}</span><p>{run.status === "published" ? `Booking closes ${dateLabel(run.bookingClosesAt)} at ${new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.bookingClosesAt))}` : "Historical and draft weeks are not open for bookings."}</p></div>}
         </section>
         {run?.cancellationReason && <p className="notice error"><strong>Run cancelled:</strong> {run.cancellationReason}</p>}
-        {!run && <p className="notice">No run weeks are available yet.</p>}
+        {!run && <p className="notice">{view === "leader" ? "You’re not leading any run weeks yet." : "No run weeks are available yet."}</p>}
         {view === "runs" && run && <BookingGroups snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} />}
         {view === "detail" && run && (() => {
           const group = snapshot.groups.find(g => g.id === groupId);
           return group ? <><GroupDetail snapshot={snapshot} run={run} group={group} /><BookingGroups snapshot={snapshot} run={run} groups={[group]} mutate={mutate} pending={pending} /></> : <p className="notice">Group not found.</p>;
         })()}
         {view === "leader" && run && <section className="stack">
-          {groups.filter(g => admin || g.leaderId === snapshot.currentMemberId).map(g => <LeaderGroup key={`${g.id}:${g.version}`} snapshot={snapshot} run={run} group={g} mutate={mutate} pending={pending} />)}
-          {!groups.some(g => admin || g.leaderId === snapshot.currentMemberId) && <p className="notice">You have no assigned groups for this week. Select another week to view your historical roster.</p>}
+          {groups.filter(g => g.leaderId === snapshot.currentMemberId).map(g => <LeaderGroup key={`${g.id}:${g.version}`} snapshot={snapshot} run={run} group={g} mutate={mutate} pending={pending} />)}
+          {!groups.some(g => g.leaderId === snapshot.currentMemberId) && <p className="notice">You have no assigned groups for this week.</p>}
         </section>}
         {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} />}
       </>}
@@ -178,7 +182,7 @@ function LeaderGroup({ snapshot, run, group, mutate, pending }: { snapshot: Plat
     <RouteEditor run={run} group={group} mutate={mutate} pending={pending} />
     <h3 className="subheading">Attendance roster</h3>
     <p className="hint">Unknown means no attendance has been recorded. Record outcomes after the run starts.</p>
-    <ul className="roster">{confirmed.map(b => {
+    <ul className="roster attendance-roster">{confirmed.map(b => {
       const outcome = snapshot.attendance.find(a => a.runId === run.id && a.memberId === b.memberId)?.outcome;
       return <li key={b.id}><span>{memberName(snapshot, b.memberId)} <span className="badge">{outcome ?? "unknown"}</span></span>
         <div className="actions">{(["present", "absent"] as const).map(o => <button key={o} className="secondary" disabled={pending || run.status !== "published" || new Date(run.startsAt) > new Date()} aria-pressed={outcome === o} onClick={() => void mutate("recordAttendance", { ...payload, memberId: b.memberId, outcome: o })}>{o === "present" ? "Present" : "Absent"}</button>)}</div>

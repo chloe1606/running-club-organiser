@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { createDemoSnapshot } from "./demo-data";
-import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics } from "./analytics";
+import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics, weeksLedBy } from "./analytics";
 
 describe("attendance analytics", () => {
+  it("lists only weeks where the member is assigned as leader", () => {
+    const snapshot = createDemoSnapshot(new Date("2026-10-02T12:00:00Z"));
+    const weeks = weeksLedBy(snapshot, "demo-leader");
+    expect(weeks.length).toBeGreaterThan(0);
+    expect(weeks.every(week => snapshot.groups.some(group => group.runId === week.id && group.leaderId === "demo-leader"))).toBe(true);
+    expect(weeksLedBy(snapshot, "demo-runner")).toEqual([]);
+    expect(weeksLedBy(snapshot)).toEqual([]);
+  });
   it("never treats a confirmed booking as actual attendance", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-02T12:00:00Z"));
     const upcoming = weeklyAnalytics(snapshot).find(w => w.run.status === "published")!;

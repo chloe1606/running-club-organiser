@@ -207,6 +207,10 @@ h2 { font-size: 1.8rem; }
 .occupancy span { background: #82917b; }
 .panel { background: #fffefa; box-shadow: 0 2px 9px rgb(43 44 35 / 4%); }
 .roster li { background: #f6f6f1; border-color: #e2e1d8; border-radius: 4px; }
+.attendance-roster { gap: .25rem; }
+.attendance-roster li { padding: .3rem .55rem; }
+.attendance-roster .actions { gap: .3rem; }
+.attendance-roster .actions button { padding: .22rem .5rem; }
 .stat { background: #eef0e9; border-radius: 5px; }
 th { background: #f0f1eb; }
 .chart-track { background: #ecece7; }

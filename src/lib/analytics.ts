@@ -1,5 +1,11 @@
 import type { PlatformSnapshot } from "./platform-types";
 
+export function weeksLedBy(snapshot: PlatformSnapshot, memberId?: string) {
+  if (!memberId) return [];
+  const ledRunIds = new Set(snapshot.groups.filter(group => group.leaderId === memberId).map(group => group.runId));
+  return snapshot.weeks.filter(week => ledRunIds.has(week.id));
+}
+
 export function queuePosition(snapshot: PlatformSnapshot, groupId: string, memberId: string) {
   const queue = snapshot.bookings.filter(b => b.groupId === groupId && b.status === "waitlisted")
     .sort((a, b) => a.bookedAt.localeCompare(b.bookedAt) || a.id.localeCompare(b.id));
