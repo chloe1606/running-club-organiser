@@ -76,8 +76,12 @@ export function confirmedCount(groupId: string, bookings: Booking[], group?: Gro
   return occupants.size;
 }
 
+export function bookingCapacity(group: Group): number {
+  return Math.max(0, Math.min(group.capacity, 20) - (group.leaderId ? 0 : 1));
+}
+
 export function nextBookingStatus(group: Group, bookings: Booking[]): BookingStatus {
-  return confirmedCount(group.id, bookings, group) < Math.min(group.capacity, 20)
+  return confirmedCount(group.id, bookings, group) < bookingCapacity(group)
     ? "confirmed"
     : "waitlisted";
 }

@@ -1,5 +1,5 @@
 import { createDemoSnapshot, demoPersonas } from "./demo-data";
-import { assertCanBook, assertCanPublish, bookingIsOpen, confirmedCount, nextBookingStatus, promoteFirstWaitlisted, type Group, type Run } from "./domain";
+import { assertCanBook, assertCanPublish, bookingCapacity, bookingIsOpen, confirmedCount, nextBookingStatus, promoteFirstWaitlisted, type Group, type Run } from "./domain";
 import type { PlatformSnapshot } from "./platform-types";
 import { createRunSchedule } from "./schedule";
 import { GatewayError } from "./gateway";
@@ -69,7 +69,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     const target = next.groups.find(g => g.id === groupId)!;
     const week = next.weeks.find(w => w.id === target.runId);
     if (!week || target.cancelled || !bookingIsOpen(week, now)) return;
-    while (confirmedCount(groupId, next.bookings) < target.capacity) {
+    while (confirmedCount(groupId, next.bookings, target) < bookingCapacity(target)) {
       const queued = promoteFirstWaitlisted(groupId, next.bookings);
       if (!queued) break;
       const member = next.members.find(m => m.id === queued.memberId);
@@ -118,7 +118,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     if (volunteerAsSweeper && !member.roles.includes("sweeper")) throw new Error("Sweeper role required.");
     if (source === "member") assertCanBook(run!, group!, next.bookings, memberId, now);
     const status = source === "assignment"
-      ? (confirmedCount(group!.id, next.bookings, group) <= Math.min(group!.capacity, 20) ? "confirmed" : "waitlisted")
+      ? (confirmedCount(group!.id, next.bookings, group) <= bookingCapacity(group!) ? "confirmed" : "waitlisted")
       : nextBookingStatus(group!, next.bookings);
     if (source === "assignment" && status === "waitlisted") throw new Error("This group has no room for an assignment.");
     if (volunteerAsSweeper && status !== "confirmed") throw new Error("A sweeper volunteer needs a confirmed place in the group.");
@@ -252,7 +252,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       }
       group![field] = id || undefined;
       if (existing) {
-        if (existing.status !== "confirmed" && confirmedCount(group!.id, next.bookings) >= group!.capacity) throw new Error("This group has no room for an assignment.");
+        if (existing.status !== "confirmed" && confirmedCount(group!.id, next.bookings, group) > bookingCapacity(group!)) throw new Error("This group has no room for an assignment.");
         existing.status = "confirmed"; existing.source = "assignment"; existing.version++;
       } else if (id) book(id, "assignment");
       promote(group!.id);
@@ -300,7 +300,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     }
     default: throw new Error("Unknown operation.");
   }
-  for (const item of next.groups) if (confirmedCount(item.id, next.bookings) > item.capacity) throw new Error("Group capacity exceeded.");
+  for (const item of next.groups) if (confirmedCount(item.id, next.bookings, item) > bookingCapacity(item)) throw new Error("Group capacity exceeded.");
   next.audit.unshift({ id: `demo-audit-${requestId}`, actorId, runId: run?.id ?? "", groupId: group?.id, memberId: String(payload.memberId ?? actorId), action: operation, at: now.toISOString(), requestId });
   store = next;
   requests.set(requestKey, fingerprint);

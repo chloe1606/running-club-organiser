@@ -14,6 +14,7 @@ import { ClubBrand } from "./club-brand";
 import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "@/lib/locations";
 import { RouteDescription } from "./route-description";
 import { SearchableSelect } from "./searchable-select";
+import { canAssignLeaderToGroup } from "@/lib/leader-availability";
 
 export type Mutate = (operation: string, payload: Record<string, unknown>) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
@@ -317,7 +318,11 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
         <SearchableSelect
           label={`Group ${g.number} · ${confirmedCount(g.id, snapshot.bookings)}/${g.capacity} · Leader`}
           value={g.leaderId ?? ""} placeholder="None"
-          options={[{ value: "", label: "None" }, ...snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => ({ value: m.id, label: m.name }))]}
+          options={[{ value: "", label: "None" }, ...snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => ({
+            value: m.id,
+            label: m.name,
+            disabled: !canAssignLeaderToGroup(m.id, g, groups, snapshot.bookings),
+          }))]}
           disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date() || g.cancelled === true}
           onChange={memberId => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId })}
         />

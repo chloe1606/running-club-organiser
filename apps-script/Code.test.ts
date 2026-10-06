@@ -88,7 +88,8 @@ function fixture(): PlatformSnapshot {
     config: { location: "DEMO", timeZone: "Europe/London", startTime: "19:00", demoConfiguration: true },
     weeks: [{ id: "run", startsAt: "2026-08-11T17:30:00Z", bookingOpensAt: "2026-08-01T00:00:00Z", bookingClosesAt: "2026-08-11T16:30:00Z", status: "published", version: 1 }],
     groups: Array.from({ length: 13 }, (_, index) => ({
-      id: "g" + (index + 1), runId: "run", number: index + 1, paceLabel: "DEMO", capacity: index === 0 ? 1 : 19, version: 1,
+      id: "g" + (index + 1), runId: "run", number: index + 1, paceLabel: "DEMO", capacity: index === 0 ? 2 : 19,
+      ...(index === 0 ? { leaderId: "leader" } : {}), version: 1,
     })),
     members: [
       { id: "admin", email: "admin@example.org", name: "Admin", roles: ["admin", "runner"], active: true, version: 1 },
@@ -309,7 +310,8 @@ describe("Apps Script locked gateway", () => {
   });
   it("switches into a full destination atomically and promotes the original FIFO queue by ID", () => {
     const initial = fixture();
-    initial.groups[1].capacity = 1;
+    delete initial.groups[0].leaderId;
+    initial.groups[1].capacity = 2;
     initial.bookings.push(booking("existing", "one"), booking("destination", "admin", "g2"),
       booking("z", "two", "g1", "waitlisted"), booking("a", "leader", "g1", "waitlisted"));
     const app = harness(initial);
@@ -354,7 +356,9 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ requestId: requestId(31), runVersion: 2, groupVersion: 2, groupId: "g1" })).toMatchObject({ ok: false, code: "GROUP_CANCELLED" });
   });
   it("lets admins mark an unled group not held and rejects the action for a led group", () => {
-    const app = harness(fixture());
+    const unled = fixture();
+    delete unled.groups[0].leaderId;
+    const app = harness(unled);
     expect(app.post({
       operation: "cancelGroup", email: "admin@example.org", requestId: requestId(32),
       runId: "run", runVersion: 1, groupId: "g1", groupVersion: 1, reason: "no-leader",
@@ -407,13 +411,15 @@ describe("Apps Script locked gateway", () => {
   });
   it("counts leader/sweeper occupants once, blocks assignment overflow and duplicate groups", () => {
     const initial = fixture();
+    delete initial.groups[0].leaderId;
     const app = harness(initial);
     expect(app.mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "leader" }).ok).toBe(true);
     expect(app.mutate({ operation: "assignSweeper", email: "leader@example.org", requestId: requestId(2), memberId: "leader", runVersion: 2, groupVersion: 2 }).ok).toBe(true);
     expect(app.state().bookings).toHaveLength(1);
-    expect(app.mutate({ requestId: requestId(3), runVersion: 3, groupVersion: 3 })).toMatchObject({ ok: true, data: { status: "waitlisted" } });
+    expect(app.mutate({ requestId: requestId(3), runVersion: 3, groupVersion: 3 })).toMatchObject({ ok: true, data: { status: "confirmed" } });
     expect(app.mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "leader", requestId: requestId(4), groupId: "g2", runVersion: 4 })).toMatchObject({ ok: false, code: "DUPLICATE_BOOKING" });
     const full = fixture();
+    full.groups[0].capacity = 1;
     full.bookings.push(booking("existing", "one"));
     expect(harness(full).mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "leader" })).toMatchObject({ ok: false, code: "GROUP_FULL" });
   });
@@ -425,6 +431,19 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "", requestId: requestId(2) })).toMatchObject({ ok: true });
     expect(app.state().groups[0].leaderId).toBeUndefined();
     expect(app.state().bookings.find((entry) => entry.id === "lead")?.status).toBe("cancelled");
+  });
+  it("keeps the leader's reserved place empty instead of promoting a waitlisted runner", () => {
+    const initial = fixture();
+    initial.bookings.push(
+      { ...booking("lead", "leader"), source: "assignment" },
+      booking("runner", "one"),
+      booking("queued", "two", "g1", "waitlisted"),
+    );
+    const app = harness(initial);
+    expect(app.mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "", requestId: requestId(2) })).toMatchObject({ ok: true });
+    expect(app.state().bookings.find((entry) => entry.id === "lead")?.status).toBe("cancelled");
+    expect(app.state().bookings.find((entry) => entry.id === "queued")?.status).toBe("waitlisted");
+    expect(app.state().bookings.filter((entry) => entry.groupId === "g1" && entry.status === "confirmed")).toHaveLength(1);
   });
   it("rejects role escalation, wrong-group leader changes and ineligible assignments", () => {
     const initial = fixture();
@@ -476,11 +495,14 @@ describe("Apps Script locked gateway", () => {
     expect(afterCutoff.state().bookings.find((entry) => entry.id === "queued")?.status).toBe("waitlisted");
   });
   it("records durable queue joins, promotions and withdrawals with peak queue sizes", () => {
-    const app = harness(fixture());
+    const initial = fixture();
+    delete initial.groups[0].leaderId;
+    initial.groups[0].capacity = 2;
+    const app = harness(initial);
     expect(app.mutate().ok).toBe(true);
     expect(app.mutate({ email: "two@example.org", requestId: requestId(2), runVersion: 2, groupVersion: 2 }).ok).toBe(true);
     expect(app.mutate({ email: "leader@example.org", requestId: requestId(3), runVersion: 3, groupVersion: 3 }).ok).toBe(true);
-    expect(app.mutate({ operation: "leave", requestId: requestId(4), runVersion: 4, groupVersion: 4 }).ok).toBe(true);
+    expect(app.mutate({ operation: "leave", email: "one@example.org", requestId: requestId(4), runVersion: 4, groupVersion: 4 }).ok).toBe(true);
     const transitions = app.state().audit.filter((entry) => ["waitlistJoined", "promoted", "withdrawn"].includes(entry.action));
     expect(transitions.map((entry) => ({ action: entry.action, queueSize: entry.queueSize }))).toEqual([
       { action: "waitlistJoined", queueSize: 1 }, { action: "waitlistJoined", queueSize: 2 },
@@ -488,7 +510,7 @@ describe("Apps Script locked gateway", () => {
     ]);
     expect(transitions.every((entry) => entry.at === now && entry.runId === "run" && entry.groupId === "g1")).toBe(true);
     const beforeReplay = app.state().audit.length;
-    expect(app.mutate({ operation: "leave", requestId: requestId(4), runVersion: 4, groupVersion: 4 }).ok).toBe(true);
+    expect(app.mutate({ operation: "leave", email: "one@example.org", requestId: requestId(4), runVersion: 4, groupVersion: 4 }).ok).toBe(true);
     expect(app.state().audit).toHaveLength(beforeReplay);
   });
   it("creates exactly 13 Tuesday groups with DST-aware times and copies routes without assignments", () => {
@@ -591,13 +613,13 @@ describe("Apps Script locked gateway", () => {
     expect(safe.mutate({ operation: "updateMember", email: "admin@example.org", memberId: "one", name: "=IMPORTXML(\"unsafe\")", roles: ["runner"], active: true }).ok).toBe(true);
     expect(safe.workbook.getSheetByName("Users")?.cells[2][1]).toBe("'=IMPORTXML(\"unsafe\")");
   });
-  it("supports a full 247-runner week plus twelve full archive weeks", () => {
+  it("supports 234 runner places plus twelve full archive weeks with leader seats reserved", () => {
     const initial = fixture();
     initial.groups.forEach((group) => group.capacity = 19);
-    for (let index = 0; index < 247; index++) {
+    for (let index = 0; index < 234; index++) {
       const memberId = "runner-" + index;
       initial.members.push({ id: memberId, email: `runner${index}@example.org`, name: `Runner ${index}`, roles: ["runner"], active: true, version: 1 });
-      initial.bookings.push(booking("full-" + index, memberId, "g" + (Math.floor(index / 19) + 1)));
+      initial.bookings.push(booking("full-" + index, memberId, "g" + (Math.floor(index / 18) + 1)));
     }
     const currentBookings = [...initial.bookings];
     const currentGroups = [...initial.groups];
@@ -615,10 +637,10 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ operation: "leave", email: "runner0@example.org" }).ok).toBe(true);
     expect(app.workbook.canonicalWrites).toBe(1);
     const manifest = JSON.parse(String(app.workbook.getSheetByName("_PlatformState")!.cells[0][0]));
-    expect(manifest.length).toBeGreaterThan(600_000);
-    expect(manifest.chunkCount).toBeGreaterThan(15);
-    expect(app.post({ operation: "snapshot" }).data?.bookings).toHaveLength(247 * 13);
-    expect(app.state().bookings.filter((entry) => entry.status === "confirmed")).toHaveLength(247 * 13 - 1);
+    expect(manifest.length).toBeGreaterThan(590_000);
+    expect(manifest.chunkCount).toBeGreaterThanOrEqual(15);
+    expect(app.post({ operation: "snapshot" }).data?.bookings).toHaveLength(234 * 13);
+    expect(app.state().bookings.filter((entry) => entry.status === "confirmed")).toHaveLength(234 * 13 - 1);
   });
   it("fails closed on altered canonical chunks, even when their length is unchanged", () => {
     const app = harness(fixture());

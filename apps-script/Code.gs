@@ -272,7 +272,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
           if (request.sweeper === true && group.sweeperId && group.sweeperId !== memberId) {
             fail_("ASSIGNMENT_EXISTS", "This group already has a sweeper.");
           }
-          const status = occupantCount_(snapshot, group) < group.capacity ? "confirmed" : "waitlisted";
+          const status = occupantCount_(snapshot, group) < bookingCapacity_(group) ? "confirmed" : "waitlisted";
           if (request.sweeper === true && status !== "confirmed") fail_("GROUP_FULL", "A sweeper volunteer needs a confirmed place in the group.");
           if (request.sweeper === true) group.sweeperId = memberId;
           const booking = {
@@ -351,11 +351,11 @@ function assignOccupant_(snapshot, run, group, request, now, auditContext) {
     snapshot.bookings.filter((entry) => entry.runId === run.id && entry.groupId === group.id && entry.memberId === previousId && entry.source === "assignment" && entry.status !== "cancelled").forEach((entry) => cancelBooking_(snapshot, entry, auditContext));
   }
   if (memberId) {
+    group[field] = memberId;
     const booking = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
-    if (!(booking && booking.status === "confirmed") && ![group.leaderId, group.sweeperId].includes(memberId) && occupantCount_(snapshot, group) >= group.capacity) {
+    if (occupantCount_(snapshot, group) > bookingCapacity_(group)) {
       fail_("GROUP_FULL", "The assignment would exceed group capacity.");
     }
-    group[field] = memberId;
     if (booking) {
       if (booking.status !== "confirmed") {
         assertBookingOpen_(run, now);
@@ -378,7 +378,7 @@ function promoteQueue_(snapshot, group, now, auditContext) {
   for (const booking of queue) {
     const member = snapshot.members.find((entry) => entry.id === booking.memberId && entry.active && entry.roles.includes("runner"));
     if (!member) { cancelBooking_(snapshot, booking, auditContext); continue; }
-    if (occupantCount_(snapshot, group) >= group.capacity) break;
+    if (occupantCount_(snapshot, group) >= bookingCapacity_(group)) break;
     booking.status = "confirmed";
     booking.version++;
     queueAudit_(snapshot, booking, "promoted", auditContext);
@@ -390,6 +390,10 @@ function occupantCount_(snapshot, group) {
   if (group.leaderId) ids.add(group.leaderId);
   if (group.sweeperId) ids.add(group.sweeperId);
   return ids.size;
+}
+
+function bookingCapacity_(group) {
+  return Math.max(0, Math.min(group.capacity, 20) - (group.leaderId ? 0 : 1));
 }
 
 function cancelBooking_(snapshot, booking, auditContext) {

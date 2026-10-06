@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 export interface SearchOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 export function SearchableSelect({
@@ -51,6 +52,7 @@ export function SearchableSelect({
   }
 
   function choose(option: SearchOption) {
+    if (option.disabled) return;
     onChange(option.value);
     close();
     requestAnimationFrame(() => triggerRef.current?.focus());
@@ -71,15 +73,15 @@ export function SearchableSelect({
         <span className="sr-only">Search {label}</span>
         <input ref={searchRef} type="search" aria-label={`Search ${label}`} placeholder="Type to filter" value={query}
           onChange={event => setQuery(event.target.value)}
-          onKeyDown={event => { if (event.key === "ArrowDown") { event.preventDefault(); rootRef.current?.querySelector<HTMLButtonElement>("[role=option]")?.focus(); } }} />
+          onKeyDown={event => { if (event.key === "ArrowDown") { event.preventDefault(); rootRef.current?.querySelector<HTMLButtonElement>("[role=option]:not(:disabled)")?.focus(); } }} />
       </label>
       <div className="search-result-count" role="status">
         {filteredOptions.length === 0 ? "No matches" : normalizedQuery ? `${filteredOptions.length} matches` : options.length > visibleOptions.length ? `Showing ${visibleOptions.length} of ${options.length} · type to search` : `${options.length} options`}
       </div>
       <div id={listId} className="searchable-select-options" role="listbox" aria-label={label}>
-        {visibleOptions.map(option => <button key={option.value} type="button" role="option" aria-selected={option.value === value}
+        {visibleOptions.map(option => <button key={option.value} type="button" role="option" aria-selected={option.value === value} disabled={option.disabled}
           className="searchable-select-option" onClick={() => choose(option)} onKeyDown={event => {
-            const optionButtons = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>("[role=option]") ?? [])];
+            const optionButtons = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>("[role=option]:not(:disabled)") ?? [])];
             const currentIndex = optionButtons.indexOf(event.currentTarget);
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
               event.preventDefault();

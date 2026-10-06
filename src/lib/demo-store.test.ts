@@ -190,6 +190,30 @@ describe("isolated explicit demo", () => {
     expect(snapshot.groups.find(g => g.id === group.id)!.leaderId).toBeUndefined();
     expect(snapshot.bookings.find(b => b.runId === run.id && b.groupId === group.id && b.memberId === "demo-leader")!.status).toBe("cancelled");
   });
+  it("keeps the leader place empty instead of promoting a waitlisted runner when the leader is removed", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    const before = getDemoSnapshot("admin");
+    const group = before.groups.find(g => g.runId === run.id && g.number === 3)!;
+    expect(before.bookings.some(b => b.groupId === group.id && b.status === "waitlisted")).toBe(true);
+    mutateDemo("assignLeader", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, memberId: "" }, "admin");
+    const after = getDemoSnapshot("admin");
+    expect(confirmedCount(group.id, after.bookings, after.groups.find(g => g.id === group.id))).toBe(group.capacity - 1);
+    expect(after.bookings.some(b => b.groupId === group.id && b.status === "waitlisted")).toBe(true);
+  });
+  it("assigns an available leader after a group is set to None", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    const initial = getDemoSnapshot("admin");
+    const group = initial.groups.find(g => g.runId === run.id && g.number === 1)!;
+    const availableLeader = initial.members.find(member => member.active && member.roles.includes("leader") &&
+      !initial.groups.some(other => other.runId === run.id && [other.leaderId, other.sweeperId].includes(member.id)) &&
+      !initial.bookings.some(booking => booking.runId === run.id && booking.memberId === member.id && booking.status !== "cancelled"))!;
+    mutateDemo("assignLeader", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, memberId: "" }, "admin");
+    const cleared = getDemoSnapshot("admin");
+    const currentRun = cleared.weeks.find(week => week.id === run.id)!;
+    const currentGroup = cleared.groups.find(item => item.id === group.id)!;
+    const assigned = mutateDemo("assignLeader", { requestId: randomUUID(), runId: run.id, runVersion: currentRun.version, groupId: currentGroup.id, groupVersion: currentGroup.version, memberId: availableLeader.id }, "admin");
+    expect(assigned.groups.find(item => item.id === group.id)!.leaderId).toBe(availableLeader.id);
+  });
   it("keeps the whole state unchanged when a runner move fails", async () => {
     const { getDemoSnapshot, mutateDemo, run, payload } = await setup();
     const before = getDemoSnapshot("admin");

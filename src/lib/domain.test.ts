@@ -42,7 +42,14 @@ describe("booking rules", () => {
     expect(confirmedCount(group.id, [confirmed], { ...group, leaderId: "one", sweeperId: "two" })).toBe(2);
     const twenty = Array.from({ length: 20 }, (_, index) => ({ ...confirmed, id: `${index}`, memberId: `${index}` }));
     expect(nextBookingStatus({ ...group, capacity: 20 }, twenty)).toBe("waitlisted");
-    expect(nextBookingStatus({ ...group, capacity: 20 }, twenty.slice(0, 19))).toBe("confirmed");
+    expect(nextBookingStatus({ ...group, capacity: 20 }, twenty.slice(0, 18))).toBe("confirmed");
+  });
+
+  it("reserves one confirmed place for a leader while the leader is unassigned", () => {
+    const groupWithCapacityThree = { ...group, capacity: 3 };
+    const twoRunners = [confirmed, { ...confirmed, id: "b", memberId: "two" }];
+    expect(nextBookingStatus(groupWithCapacityThree, twoRunners)).toBe("waitlisted");
+    expect(nextBookingStatus({ ...groupWithCapacityThree, leaderId: "leader" }, [confirmed])).toBe("confirmed");
   });
 
   it("breaks promotion ties by ID, including equivalent timestamp offsets", () => {

@@ -145,6 +145,8 @@ caption { text-align: left; font-weight: 700; margin-bottom: .7rem; }
 .searchable-select-options { display: grid; max-height: 15rem; overflow-y: auto; overscroll-behavior: contain; }
 .searchable-select-option { width: 100%; min-width: 0; padding: .5rem .6rem; border: 0; border-radius: 4px; background: transparent; color: var(--ink); font-size: .84rem; font-weight: 500; text-align: left; overflow-wrap: anywhere; }
 .searchable-select-option:hover, .searchable-select-option[aria-selected="true"] { background: #edf0e8; color: #354b39; }
+.searchable-select-option:disabled { background: transparent; color: #9a9891; cursor: not-allowed; }
+.searchable-select-option:disabled:hover { background: transparent; color: #9a9891; }
 .searchable-select-option:focus-visible { outline: 2px solid #c39421; outline-offset: -2px; }
 .searchable-select-limit { padding: .5rem .6rem; margin: 0; color: var(--muted); font-size: .75rem; }
 .member-pagination { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .8rem; }
