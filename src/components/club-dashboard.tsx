@@ -96,16 +96,16 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
     } catch (error) { setFailure(true); setMessage(error instanceof Error ? error.message : "Demo unavailable."); }
     finally { setPending(false); }
   }
-  const headings = { runs: "Find your Tuesday rhythm.", leader: "Lead the way.", admin: "Your club, in motion.", profile: "Every run tells a story.", detail: "Your group. Your people." };
+  const headings = { runs: "Club Runs", leader: "Leaders", admin: "Admins", profile: "My Running", detail: "Group Details" };
   const groups = snapshot.groups.filter(g => g.runId === run?.id).sort((a, b) => a.number - b.number);
   return <main>
     <nav className="club-nav" aria-label="Club navigation">
       <ClubBrand />
       <div className="nav-links">
-        <Link href="/">Runs</Link>
+        <Link href="/">Club Runs</Link>
         {snapshot.currentMemberId && <Link href="/profile">My Running</Link>}
-        {(leader || admin) && <Link href="/leader">Leader Workspace</Link>}
-        {admin && <Link href="/admin">Club Admin</Link>}
+        {(leader || admin) && <Link href="/leader">Leaders</Link>}
+        {admin && <Link href="/admin">Admin</Link>}
         {!snapshot.demo && (snapshot.currentMemberId ? <SignOut /> : <SignIn />)}
       </div>
     </nav>
