@@ -28,7 +28,7 @@ Configure 1–20 groups with unique positive numbers up to 20 in the workbook; d
 2. Set `NEXTAUTH_URL` to the application's canonical origin, e.g. `https://runs.example.org`; use `http://localhost:3000` locally. Callback redirects are restricted to that origin.
 3. Create a Google OAuth web client. Register `/api/auth/callback/google` on each explicitly allowed application origin as an authorized redirect URI. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A non-Gmail Google account is supported, but Google's `email_verified` must be true.
 4. Configure SMTP with `EMAIL_SERVER_HOST`, `EMAIL_SERVER_PORT`, `EMAIL_SERVER_USER`, `EMAIL_SERVER_PASSWORD`, and `EMAIL_FROM` (your verified sender). For Brevo, use `smtp-relay.brevo.com` on port `587`, with the SMTP login and SMTP key. Configure the sender's SPF/DKIM/DMARC with your mail provider; test spam filtering and delivery. Leaving SMTP unset disables only the email option, not otherwise configured Google sign-in.
-5. Set up the persistent protected auth storage and deploy **both** Apps Script files as described below. Email links cannot work without persistent adapter storage, even with JWT sessions.
+5. Set up the persistent protected auth storage and deploy **all three** Apps Script files as described below. Email links cannot work without persistent adapter storage, even with JWT sessions.
 6. Add trusted club users before testing live login. Normalize email with trim/lowercase; duplicate normalized emails or stable IDs are rejected. Do not use demo accounts for live membership.
 
 Sign-in, check-inbox/resend and error screens live under `/auth`. Email requests use a generic response, including nonmembers and cooldown requests. Tokens expire after 15 minutes. NextAuth generates cryptographically random tokens and hashes them before persistence; the gateway consumes tokens under the shared lock, so replay or simultaneous redemption cannot reuse them. Google and email must resolve to the same trusted stable member ID. OAuth account linking is not globally enabled for untrusted emails.
@@ -47,6 +47,17 @@ Create a **bound** Apps Script project in the workbook, use the V8 runtime, and 
 Unset settings fail closed. Authorize the owner-run setup functions for spreadsheet access, identity and workbook backup copying. Deploy a Web App executing as the workbook owner. The Next.js server must be able to reach its HTTPS `/exec` URL; plaintext gateway URLs are rejected. If your Workspace can provide authenticated access, restrict it accordingly; a public gateway must still reject every request lacking the shared secret. Never expose that secret in client code.
 
 After changing scripts, create a **new deployment version**, update the existing deployment to that version and verify the configured `/exec` URL. A source save alone does not update a deployed Web App. Protect the workbook and auth sheets from ordinary members; hidden tabs alone are not access control. Membership and booking sheets are not intended for concurrent manual editing while the service is live.
+
+### OAuth callback troubleshooting
+
+`adapter_error_getUserByAccount` followed by `OAUTH_CALLBACK_HANDLER_ERROR` means the persistent account lookup failed; a missing account normally returns `null` and is not an error. In development, the adapter log includes only allowlisted gateway codes or an invalid-record label, never upstream messages or identity details. Production logs remain generic.
+
+- `NON_JSON_RESPONSE`: the gateway returned HTML or another non-JSON body, even if its HTTP status was 200. Verify the current Web App `/exec` URL, execute-as-owner setting, deployment version and access policy. The server sends a shared secret, not a signed-in Google browser session; a browser successfully opening the URL does not prove server access. If Workspace policy forbids server-reachable access, use an authenticated gateway integration rather than weakening the policy.
+- `UNAUTHORIZED`: match the server's `APPS_SCRIPT_GATEWAY_SECRET` to the script's `GATEWAY_SECRET`.
+- `WORKBOOK_MISMATCH`: match `GOOGLE_SHEET_ID` to the script's `SPREADSHEET_ID`.
+- `NOT_CONFIGURED` or `UNKNOWN_OPERATION`: deploy `Code.gs`, `Storage.gs` and `Auth.gs` together as a new version, and verify the script properties.
+- `AUTH_UNAVAILABLE`: check owner authorization, spreadsheet access, hidden auth-sheet headers and protections in Apps Script. Do not delete existing auth records to work around a setup error.
+- `INVALID_RESPONSE` or `invalid auth record`: check the deployed response format or stored record schema without copying private records into logs.
 
 ### Persistent auth storage
 

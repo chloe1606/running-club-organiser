@@ -48,14 +48,18 @@ export async function mutateSheet(
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ ...payload, operation, secret, spreadsheetId: process.env.GOOGLE_SHEET_ID }),
     });
-    body = await response.json();
   } catch {
     throw new GatewayError("The club service is unavailable. Please retry the same request.", 503, "UNAVAILABLE");
+  }
+  try {
+    body = await response.json();
+  } catch {
+    throw new GatewayError("The club gateway returned a non-JSON response. Check its deployment URL and access settings.", 502, "NON_JSON_RESPONSE");
   }
   const parsed = gatewayResponseSchema.safeParse(body);
 
   if (!parsed.success) {
-    throw new GatewayError("The booking service returned an invalid response.", 502);
+    throw new GatewayError("The booking service returned an invalid response.", 502, "INVALID_RESPONSE");
   }
   if (!response.ok || !parsed.data.ok) {
     throw new GatewayError(

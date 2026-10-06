@@ -31,11 +31,21 @@ describe("gateway boundary", () => {
   });
   it("fails safely for invalid schemas, network or missing config", async () => {
     configure({ status: "success" });
-    await expect(mutateSheet("book", {})).rejects.toMatchObject({ status: 502 });
+    await expect(mutateSheet("book", {})).rejects.toMatchObject({ status: 502, code: "INVALID_RESPONSE" });
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("sensitive upstream URL")));
     await expect(mutateSheet("book", {})).rejects.toThrow("unavailable");
     vi.stubEnv("APPS_SCRIPT_GATEWAY_URL", "");
     await expect(mutateSheet("book", {})).rejects.toBeInstanceOf(GatewayError);
+  });
+  it("distinguishes a Google HTML deployment page from a network failure without exposing its content", async () => {
+    configure({ ok: true });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>private upstream content</html>", {
+      headers: { "Content-Type": "text/html" },
+    })));
+    await expect(mutateSheet("authGetUserByAccount", {})).rejects.toMatchObject({
+      status: 502, code: "NON_JSON_RESPONSE",
+      message: "The club gateway returned a non-JSON response. Check its deployment URL and access settings.",
+    });
   });
   it("never sends the shared secret over plaintext", async () => {
     const fetcher = configure({ ok: true });

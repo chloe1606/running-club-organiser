@@ -7,6 +7,7 @@ import type { NextAuthOptions } from "next-auth";
 import type { VerificationToken } from "next-auth/adapters";
 import type { EmailConfig } from "next-auth/providers/email";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ZodError } from "zod";
 import { normalizeAuthEmail, sheetsAuthAdapter } from "./auth-adapter";
 
 const mocks = vi.hoisted(() => ({
@@ -340,6 +341,51 @@ describe("membership-restricted authentication", () => {
     logger.error!("PRIVATE_TOKEN_URL", { error: new Error("private metadata"), token: "private-token", url: "https://example.org/?token=private" });
     expect(spy).toHaveBeenCalledWith("Authentication request failed.");
     spy.mockRestore();
+  });
+  it.each(["UNAUTHORIZED", "WORKBOOK_MISMATCH", "NOT_CONFIGURED", "AUTH_UNAVAILABLE", "UNKNOWN_OPERATION", "UNAVAILABLE", "NON_JSON_RESPONSE", "INVALID_RESPONSE"])(
+    "reports only the allowlisted gateway code %s for adapter failures in development", async (code) => {
+      vi.stubEnv("NODE_ENV", "development");
+      const logger = (await options()).logger!;
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        logger.error!("adapter_error_getUserByAccount", Object.assign(new Error("private upstream message"), {
+          code, token: "private-token", url: "https://example.org/?token=private",
+        }));
+        expect(spy.mock.calls).toEqual([[
+          `Authentication request failed (adapter_error_getUserByAccount; gateway: ${code}).`,
+        ]]);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+  it("redacts unknown adapter errors and validation details in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const logger = (await options()).logger!;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      logger.error!("adapter_error_getUserByAccount", Object.assign(new Error("private email"), { code: "private-token" }));
+      logger.error!("adapter_error_getUserByAccount", new ZodError([{
+        code: "custom", path: ["private email"], message: "private record",
+      }]));
+      expect(spy.mock.calls).toEqual([
+        ["Authentication request failed (adapter_error_getUserByAccount)."],
+        ["Authentication request failed (adapter_error_getUserByAccount; invalid auth record)."],
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("keeps production adapter failures generic even for known gateway codes", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const logger = (await options()).logger!;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      logger.error!("adapter_error_getUserByAccount", Object.assign(new Error("private metadata"), { code: "UNAUTHORIZED" }));
+      expect(spy.mock.calls).toEqual([["Authentication request failed."]]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
