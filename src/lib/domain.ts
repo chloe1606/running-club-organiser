@@ -8,6 +8,8 @@ export interface Versioned {
 
 export interface Run extends Versioned {
   id: string;
+  location?: string;
+  mapsUrl?: string;
   startsAt: string;
   bookingOpensAt: string;
   bookingClosesAt: string;
@@ -26,6 +28,8 @@ export interface Group extends Versioned {
   sweeperId?: string;
   routeDescription?: string;
   routeNeedsReview?: boolean;
+  cancelled?: boolean;
+  cancellationReason?: "low-interest" | "no-leader";
   capacity: number;
 }
 
@@ -72,8 +76,12 @@ export function confirmedCount(groupId: string, bookings: Booking[], group?: Gro
   return occupants.size;
 }
 
+export function bookingCapacity(group: Group): number {
+  return Math.max(0, Math.min(group.capacity, 20) - (group.leaderId ? 0 : 1));
+}
+
 export function nextBookingStatus(group: Group, bookings: Booking[]): BookingStatus {
-  return confirmedCount(group.id, bookings, group) < Math.min(group.capacity, 19)
+  return confirmedCount(group.id, bookings, group) < bookingCapacity(group)
     ? "confirmed"
     : "waitlisted";
 }

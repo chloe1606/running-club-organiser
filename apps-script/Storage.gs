@@ -16,7 +16,7 @@
  * costs; move to a transactional database before those become operational limits.
  *
  * Users: Email,Name,Role,User ID,Active,Version.
- * Groups: Group,Distance,Pace,Capacity,Group ID (exactly 13 master definitions).
+ * Groups: Group,Distance,Pace,Capacity,Group ID (1–20 master definitions).
  * Owner setup staging projections: UserSetup has the same six Users headers;
  * GroupDefinitions has the same five Groups headers;
  * ClubConfiguration: Setting,Value (Location,Time Zone,Start Time,Demo Configuration).
@@ -39,10 +39,19 @@
  * Manual worksheet edits never override the canonical committed state.
  */
 const PLATFORM_CONFIG = {
-  location: "DEMO — confirm the club meeting location",
+  location: "Willett Recreation Ground", // or "Norman Park (Track Side)"
   timeZone: "Europe/London",
-  startTime: "18:30",
-  demoConfiguration: true,
+  startTime: "19:00",
+  demoConfiguration: false,
+};
+const PLATFORM_BOOKING_CUTOFF = "18:30";
+const DEFAULT_CLUB_LOCATIONS = [
+  "Willett Recreation Ground",
+  "Norman Park (Track Side)",
+];
+const DEFAULT_CLUB_LOCATION_MAPS = {
+  "Willett Recreation Ground": "https://www.google.com/maps/place/Willett+Recreation+Ground/@51.3928404,0.0731925,581m/data=!3m2!1e3!4b1!4m6!3m5!1s0x47d8ab9c1fc4d937:0x36b9ea1a882bd93c!8m2!3d51.3928405!4d0.0780634!16s%2Fg%2F1jkvjm9kp?entry=ttu&g_ep=EgoyMDI2MDkzMC4wIKXMDSoASAFQAw%3D%3D",
+  "Norman Park (Track Side)": "https://www.google.com/maps/place/Norman+Park+(Hayes)+Recycling+Site/@51.3875908,0.0159645,581m/data=!3m1!1e3!4m9!1m2!2m1!1snorman+park!3m5!1s0x47d8aa8a1fd2fbf5:0x8b2404213a74d0a9!8m2!3d51.3875917!4d0.0207297!16s%2Fg%2F1jkvlxf_p?entry=ttu&g_ep=EgoyMDI2MDkzMC4wIKXMDSoASAFQAw%3D%3D",
 };
 const PLATFORM_STATE_SHEET = "_PlatformState";
 const PLATFORM_CHUNK_SIZE = 39995;
@@ -80,6 +89,20 @@ function loadPlatformState_() {
   if (state.revision === undefined) state.revision = 0;
   if (!Number.isInteger(state.revision) || state.revision < 0) fail_("STATE_CORRUPT", "Invalid canonical revision.");
   if (!state.groupDefinitions) state.groupDefinitions = defaultGroupDefinitions_();
+  const hasSavedLocations = Array.isArray(state.snapshot.config.locations) && state.snapshot.config.locations.length > 0;
+  const savedLocations = hasSavedLocations
+    ? state.snapshot.config.locations
+    : DEFAULT_CLUB_LOCATIONS.slice();
+  state.snapshot.config.locations = clubLocationOptions_(Object.assign({}, state.snapshot.config, { locations: savedLocations }));
+  if (String(state.snapshot.config.location || "").trim().toLowerCase() === "willett rec") {
+    state.snapshot.config.location = "Willett Recreation Ground";
+  }
+  state.snapshot.config.locationMaps = hasSavedLocations
+    ? (state.snapshot.config.locationMaps || {})
+    : Object.assign({}, DEFAULT_CLUB_LOCATION_MAPS, state.snapshot.config.locationMaps || {});
+  Object.keys(state.snapshot.config.locationMaps).forEach((venue) => {
+    if (!state.snapshot.config.locations.includes(venue)) delete state.snapshot.config.locationMaps[venue];
+  });
   validateGroupDefinitions_(state.groupDefinitions);
   validatePlatform_(state.snapshot);
   return state;
@@ -200,19 +223,16 @@ function confirmClubConfiguration() {
       paceLabel: String(entry.Pace || ""), capacity: Number(entry.Capacity),
     }));
     validateGroupDefinitions_(definitions);
-    if (definitions.some((entry) => !state.groupDefinitions.some((previous) => previous.number === entry.number && previous.id === entry.id))) {
+    if (state.groupDefinitions.some((previous) => !definitions.some((entry) => previous.id === entry.id))) {
       fail_("INVALID_GROUP_DEFINITIONS", "Keep each master group's stable ID unchanged.");
     }
-    if (definitions.some((entry) => /\bDEMO\b/i.test(entry.distanceLabel + " " + entry.paceLabel)) ||
-        !PLATFORM_CONFIG.location.trim() || /\bDEMO\b/i.test(PLATFORM_CONFIG.location) ||
-        PLATFORM_CONFIG.timeZone !== "Europe/London" || PLATFORM_CONFIG.startTime !== "18:30") {
-      fail_("UNCONFIRMED_CONFIGURATION", "Confirm the real meeting location, thirteen distance/pace definitions, Europe/London and 18:30 before applying configuration.");
-    }
+    validateConfirmedClubConfiguration_(PLATFORM_CONFIG, definitions);
     const spreadsheet = platformSpreadsheet_();
     const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-configuration backup " + new Date().toISOString());
     if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
     state.groupDefinitions = definitions;
     state.snapshot.config = Object.assign({}, PLATFORM_CONFIG, { demoConfiguration: false });
+    state.snapshot.config.locations = clubLocationOptions_(state.snapshot.config);
     state.configuration = { backupId: backup.getId(), at: new Date().toISOString(), actorId: admin.id };
     state.snapshot.audit.push({
       id: Utilities.getUuid(), runId: "", actorId: admin.id, action: "confirmClubConfiguration",
@@ -243,7 +263,7 @@ function configureClubPlatform() {
           paceLabel: String(entry.Pace || ""), capacity: Number(entry.Capacity),
         }));
         validateGroupDefinitions_(definitions);
-        if (definitions.some((entry) => !state.groupDefinitions.some((previous) => previous.number === entry.number && previous.id === entry.id))) {
+        if (state.groupDefinitions.some((previous) => !definitions.some((entry) => previous.id === entry.id))) {
           fail_("INVALID_GROUP_DEFINITIONS", "Keep each master group's stable ID unchanged.");
         }
         const settings = {};
@@ -254,14 +274,11 @@ function configureClubPlatform() {
         });
         const config = {
           location: String(settings.Location || "").trim(), timeZone: String(settings["Time Zone"] || "").trim(),
-          startTime: String(settings["Start Time"] || "").trim(),
+          startTime: normalizeClubTime_(settings["Start Time"]),
           demoConfiguration: String(settings["Demo Configuration"]).toUpperCase() !== "FALSE",
         };
-        if (!config.location || /\bDEMO\b/i.test(config.location) || config.timeZone !== "Europe/London" ||
-            config.startTime !== "18:30" || config.demoConfiguration ||
-            definitions.some((entry) => /\bDEMO\b/i.test(entry.distanceLabel + " " + entry.paceLabel))) {
-          fail_("UNCONFIRMED_CONFIGURATION", "Confirm the real meeting location, all thirteen distance/pace definitions, Europe/London, 18:30 and Demo Configuration FALSE.");
-        }
+        config.locations = clubLocationOptions_(Object.assign({}, state.snapshot.config, config));
+        validateConfirmedClubConfiguration_(config, definitions);
         const roster = records_("UserSetup").map((entry) => {
           const active = String(entry.Active).toUpperCase();
           if (!["TRUE", "FALSE"].includes(active)) fail_("INVALID_MEMBER", "Each UserSetup row requires a TRUE or FALSE Active flag.");
@@ -331,19 +348,68 @@ function defaultGroupDefinitions_() {
   }));
 }
 function validateGroupDefinitions_(definitions) {
-  if (!Array.isArray(definitions) || definitions.length !== 13 ||
-      new Set(definitions.map((entry) => entry.id)).size !== 13 ||
-      new Set(definitions.map((entry) => entry.number)).size !== 13 ||
+  if (!Array.isArray(definitions) || definitions.length < 1 || definitions.length > 20 ||
+      new Set(definitions.map((entry) => entry.id)).size !== definitions.length ||
+      new Set(definitions.map((entry) => entry.number)).size !== definitions.length ||
       definitions.some((entry) => !/^[a-zA-Z0-9_-]{1,80}$/.test(entry.id) ||
-        !Number.isInteger(entry.number) || entry.number < 1 || entry.number > 13 ||
-        entry.capacity !== 19 || typeof entry.distanceLabel !== "string" || !entry.distanceLabel.trim() ||
+        !Number.isFinite(entry.number) || entry.number <= 0 || entry.number > 20 ||
+        !Number.isInteger(entry.capacity) || entry.capacity < 1 || entry.capacity > 20 || typeof entry.distanceLabel !== "string" || !entry.distanceLabel.trim() ||
         typeof entry.paceLabel !== "string" || !entry.paceLabel.trim())) {
-    fail_("INVALID_GROUP_DEFINITIONS", "Supply exactly thirteen stable group IDs, numbered 1–13, with confirmed distance/pace labels and fixed capacity 19.");
+    fail_("INVALID_GROUP_DEFINITIONS", "Supply 1–20 groups with unique positive numbers up to 20, stable IDs, confirmed distance/pace labels, and capacity 1–20.");
   }
 }
 
+function validateConfirmedClubConfiguration_(config, definitions) {
+  if (!config.location || /\bDEMO\b/i.test(config.location)) {
+    fail_("UNCONFIRMED_CONFIGURATION", "Set a real club meeting Location.");
+  }
+  try {
+    if (!config.timeZone) throw new Error("Missing time zone.");
+    Utilities.formatDate(new Date(), config.timeZone, "yyyy-MM-dd");
+  } catch (_) {
+    fail_("UNCONFIRMED_CONFIGURATION", "Set Time Zone to a valid IANA timezone, such as Europe/London.");
+  }
+  const cutoffMinutes = Number(PLATFORM_BOOKING_CUTOFF.slice(0, 2)) * 60 + Number(PLATFORM_BOOKING_CUTOFF.slice(3));
+  if (typeof config.startTime !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(config.startTime) ||
+      Number(config.startTime.slice(0, 2)) * 60 + Number(config.startTime.slice(3)) <= cutoffMinutes) {
+    fail_("UNCONFIRMED_CONFIGURATION", "Set Start Time as HH:mm and later than the 18:30 booking cutoff.");
+  }
+  if (config.demoConfiguration !== false) {
+    fail_("UNCONFIRMED_CONFIGURATION", "Set Demo Configuration to FALSE.");
+  }
+  if (definitions.some((entry) => /\bDEMO\b/i.test(entry.distanceLabel + " " + entry.paceLabel))) {
+    fail_("UNCONFIRMED_CONFIGURATION", "Replace DEMO text in every configured group distance and pace.");
+  }
+}
+
+function normalizeClubTime_(value) {
+  if (value && typeof value.getTime === "function" && Number.isFinite(value.getTime())) {
+    const spreadsheet = platformSpreadsheet_();
+    const timeZone = typeof spreadsheet.getSpreadsheetTimeZone === "function"
+      ? spreadsheet.getSpreadsheetTimeZone()
+      : "Etc/UTC";
+    return Utilities.formatDate(value, timeZone, "HH:mm");
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value < 1) {
+    const minutes = Math.round(value * 24 * 60) % (24 * 60);
+    return String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0");
+  }
+  return typeof value === "string" ? value.trim() : String(value ?? "").trim();
+}
+
 function emptySnapshot_() {
-  return { weeks: [], groups: [], bookings: [], members: [], attendance: [], audit: [], config: Object.assign({}, PLATFORM_CONFIG), demo: false };
+  return { weeks: [], groups: [], bookings: [], members: [], attendance: [], audit: [], config: Object.assign({}, PLATFORM_CONFIG, { locations: DEFAULT_CLUB_LOCATIONS.slice(), locationMaps: Object.assign({}, DEFAULT_CLUB_LOCATION_MAPS) }), demo: false };
+}
+function clubLocationOptions_(config) {
+  const candidates = Array.isArray(config.locations) ? config.locations : [];
+  if (config.location && !/\bDEMO\b/i.test(config.location)) candidates.push(config.location);
+  const seen = new Set();
+  return candidates.map((location) => String(location || "").trim()).filter((location) => {
+    const key = location.toLowerCase();
+    if (!location || key === "willett rec" || location.length > 120 || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 30);
 }
 function legacySnapshot_() {
   const snapshot = emptySnapshot_();
@@ -366,7 +432,7 @@ function legacySnapshot_() {
       paceLabel: String(entry.paceLabel || "DEMO — pace to be confirmed"),
       distanceLabel: String(entry.distanceLabel || "DEMO — distance to be confirmed"),
       name: String(entry.name || "Group " + entry.groupNumber),
-      capacity: historical ? Number(entry.capacity) : 19, version: Number(entry.version || 1),
+      capacity: Number(entry.capacity || 19), version: Number(entry.version || 1),
       ...(entry.leaderId ? { leaderId: String(entry.leaderId) } : {}),
       ...(entry.sweeperId ? { sweeperId: String(entry.sweeperId) } : {}),
       routeDescription: String(entry.routeDescription || ""), routeNeedsReview: !!entry.routeDescription,
@@ -414,14 +480,25 @@ function validatePlatform_(snapshot) {
         !Number.isInteger(entry.version) || entry.version < 1) fail_("INVALID_DATA", "Invalid or duplicate member details.");
     emails.add(entry.email);
   });
+  if (snapshot.config.locations !== undefined) {
+    if (!Array.isArray(snapshot.config.locations) || snapshot.config.locations.length > 30 ||
+        snapshot.config.locations.some((location) => typeof location !== "string" || !location.trim() || location.length > 120) ||
+        new Set(snapshot.config.locations.map((location) => location.trim().toLowerCase())).size !== snapshot.config.locations.length ||
+        (!/\bDEMO\b/i.test(snapshot.config.location) && snapshot.config.locations.length && !snapshot.config.locations.includes(snapshot.config.location))) fail_("INVALID_CONFIGURATION", "Configured locations must be unique and include the selected location.");
+  }
+  if (snapshot.config.locationMaps !== undefined) {
+    if (!snapshot.config.locationMaps || typeof snapshot.config.locationMaps !== "object" || Array.isArray(snapshot.config.locationMaps) ||
+        Object.keys(snapshot.config.locationMaps).some((location) => !snapshot.config.locations?.includes(location) || !validMapsUrl_(snapshot.config.locationMaps[location]))) {
+      fail_("INVALID_CONFIGURATION", "Each saved Google Maps link must be valid and belong to a saved venue.");
+    }
+  }
   snapshot.weeks.forEach((week) => {
     if (!["draft", "published", "cancelled", "archived"].includes(week.status) ||
         ![week.startsAt, week.bookingOpensAt, week.bookingClosesAt].every((value) => Number.isFinite(new Date(value).getTime())) ||
         !Number.isInteger(week.version) || week.version < 1) fail_("INVALID_DATA", "Invalid week details.");
     const weekGroups = snapshot.groups.filter((group) => group.runId === week.id);
     if (!["archived", "cancelled"].includes(week.status) &&
-        (weekGroups.length !== 13 || new Set(weekGroups.map((group) => group.number)).size !== 13 ||
-         weekGroups.some((group) => !Number.isInteger(group.number) || group.number < 1 || group.number > 13))) fail_("INVALID_GROUPS", "Every live week must have exactly thirteen numbered groups.");
+      (!weekGroups.length || weekGroups.length > 20 || new Set(weekGroups.map((group) => group.number)).size !== weekGroups.length)) fail_("INVALID_GROUPS", "Every live week must have 1–20 groups with unique numbers.");
   });
   if (snapshot.weeks.filter((week) => week.status === "published" && new Date(week.startsAt) > new Date()).length > 1) {
     fail_("PUBLISHED_RUN_EXISTS", "Only one future run can be published.");
@@ -430,11 +507,11 @@ function validatePlatform_(snapshot) {
   snapshot.groups.forEach((group) => {
     const week = snapshot.weeks.find((entry) => entry.id === group.runId);
     const live = week && !["archived", "cancelled"].includes(week.status) && new Date(week.startsAt) > new Date();
-    if (!weeks.has(group.runId) || !Number.isInteger(group.capacity) || group.capacity < 1 || group.capacity > (live ? 19 : 20) ||
-        !Number.isInteger(group.number) || group.number < 1 || group.number > 13 ||
+    if (!weeks.has(group.runId) || !Number.isInteger(group.capacity) || group.capacity < 1 || group.capacity > 20 ||
+      !Number.isFinite(group.number) || group.number <= 0 || group.number > 20 ||
         typeof group.paceLabel !== "string" || !group.paceLabel.trim() ||
         !Number.isInteger(group.version) || group.version < 1) fail_("INVALID_GROUPS", "Invalid group capacity or version.");
-    if (live && occupantCount_(snapshot, group) > group.capacity) fail_("GROUP_FULL", "Existing occupants exceed the nineteen-person maximum; reconcile legacy data before migration.");
+    if (live && !group.cancelled && occupantCount_(snapshot, group) > group.capacity) fail_("GROUP_FULL", "Existing occupants exceed group capacity; reconcile legacy data before migration.");
     ["leader", "sweeper"].forEach((role) => {
       const id = group[role + "Id"];
       if (!id) return;
@@ -499,15 +576,17 @@ function projectPlatform_(state) {
     snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
   writeProjection_("UserSetup", ["Email", "Name", "Role", "User ID", "Active", "Version"],
     snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
-  writeProjection_("Weeks", ["Week ID", "Date", "Starts At", "Booking Opens At", "Booking Closes At", "Status", "Version", "Cancellation Reason", "Sheet"],
-    snapshot.weeks.map((entry) => [entry.id, clubLocalDate_(new Date(entry.startsAt), snapshot.config.timeZone), entry.startsAt, entry.bookingOpensAt, entry.bookingClosesAt, entry.status, entry.version, entry.cancellationReason || "", weeklySheetName_(entry.id)]));
+  writeProjection_("Weeks", ["Week ID", "Date", "Starts At", "Booking Opens At", "Booking Closes At", "Status", "Version", "Cancellation Reason", "Sheet", "Location", "Google Maps URL"],
+    snapshot.weeks.map((entry) => [entry.id, clubLocalDate_(new Date(entry.startsAt), snapshot.config.timeZone), entry.startsAt, entry.bookingOpensAt, entry.bookingClosesAt, entry.status, entry.version, entry.cancellationReason || "", weeklySheetName_(entry.id), entry.location || snapshot.config.location, entry.mapsUrl || ""]));
   writeProjection_("Groups", ["Group", "Distance", "Pace", "Capacity", "Group ID"],
-    state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, 19, entry.id]));
+    state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, entry.capacity, entry.id]));
   writeProjection_("GroupDefinitions", ["Group", "Distance", "Pace", "Capacity", "Group ID"],
-    state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, 19, entry.id]));
+    state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, entry.capacity, entry.id]));
   writeProjection_("ClubConfiguration", ["Setting", "Value"], [
     ["Location", snapshot.config.location], ["Time Zone", snapshot.config.timeZone],
     ["Start Time", snapshot.config.startTime], ["Demo Configuration", snapshot.config.demoConfiguration],
+    ["Available Locations", JSON.stringify(clubLocationOptions_(snapshot.config))],
+    ["Location Maps", JSON.stringify(snapshot.config.locationMaps || {})],
   ]);
   snapshot.weeks.forEach((week) => {
     const bookings = snapshot.bookings.filter((entry) => entry.runId === week.id).map((entry) => {
@@ -598,7 +677,7 @@ function clubInstant_(date, time, timeZone) {
 }
 function platformSchedule_(date, config, now) {
   const startsAt = clubInstant_(date, config.startTime, config.timeZone);
-  const bookingClosesAt = clubInstant_(date, "17:30", config.timeZone);
-  if (new Date(date + "T12:00:00Z").getUTCDay() !== 2 || new Date(bookingClosesAt) <= now || new Date(startsAt) <= new Date(bookingClosesAt)) fail_("INVALID_DATE", "Choose a future Tuesday with a start after the 17:30 club-local cutoff.");
+  const bookingClosesAt = clubInstant_(date, PLATFORM_BOOKING_CUTOFF, config.timeZone);
+  if (new Date(date + "T12:00:00Z").getUTCDay() !== 2 || new Date(bookingClosesAt) <= now || new Date(startsAt) <= new Date(bookingClosesAt)) fail_("INVALID_DATE", "Choose a future Tuesday with a start after the 18:30 club-local cutoff.");
   return { startsAt, bookingOpensAt: now.toISOString(), bookingClosesAt };
 }

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "A web-based booking system for our weekly Tuesday evening club runs, built with Next.js and using Google Sheets as the backend database.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -25,6 +25,7 @@
     "nodemailer": "^10.0.13",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "server-only": "^0.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

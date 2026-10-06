@@ -5,12 +5,15 @@ import type { ClubConfig } from "./platform-types";
 export const DEMO_CLUB_CONFIG: ClubConfig = {
   location: "DEMO — confirm the club meeting location",
   timeZone: "Europe/London",
-  startTime: "18:30",
+  startTime: "19:00",
   demoConfiguration: true,
 };
 
 export const GROUP_COUNT = 13;
 export const GROUP_CAPACITY = 19;
+export const MAX_GROUP_COUNT = 20;
+export const MAX_GROUP_CAPACITY = 20;
+export const BOOKING_CUTOFF = "18:30";
 export const DEMO_DISTANCE_LABEL = "DEMO — distance to be confirmed";
 
 export function clubDate(now: Date = new Date(), timeZone = "Europe/London"): string {
@@ -52,7 +55,7 @@ export function nextTuesdayDate(now: Date = new Date(), timeZone = "Europe/Londo
   const days = (2 - today.getUTCDay() + 7) % 7;
   today.setUTCDate(today.getUTCDate() + days);
   const date = today.toISOString().slice(0, 10);
-  if (days === 0 && now >= new Date(clubDateTime(date, "17:30", timeZone))) {
+  if (days === 0 && now >= new Date(clubDateTime(date, BOOKING_CUTOFF, timeZone))) {
     today.setUTCDate(today.getUTCDate() + 7);
   }
   return today.toISOString().slice(0, 10);
@@ -63,7 +66,7 @@ export function createRunSchedule(
 ): Pick<Run, "startsAt" | "bookingOpensAt" | "bookingClosesAt"> {
   const startsAt = clubDateTime(date, config.startTime, config.timeZone);
   if (new Date(`${date}T12:00:00Z`).getUTCDay() !== 2) throw new Error("Club runs must be on Tuesday.");
-  const bookingClosesAt = clubDateTime(date, "17:30", config.timeZone);
+  const bookingClosesAt = clubDateTime(date, BOOKING_CUTOFF, config.timeZone);
   if (new Date(bookingClosesAt) <= now || new Date(startsAt) <= new Date(bookingClosesAt)) {
     throw new Error("Choose a future Tuesday with a start after the booking cutoff.");
   }

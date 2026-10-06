@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { createDemoSnapshot } from "./demo-data";
-import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics } from "./analytics";
+import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics, weeksLedBy } from "./analytics";
 
 describe("attendance analytics", () => {
+  it("lists only weeks where the member is assigned as leader", () => {
+    const snapshot = createDemoSnapshot(new Date("2026-10-02T12:00:00Z"));
+    const weeks = weeksLedBy(snapshot, "demo-leader");
+    expect(weeks.length).toBeGreaterThan(0);
+    expect(weeks.every(week => snapshot.groups.some(group => group.runId === week.id && group.leaderId === "demo-leader"))).toBe(true);
+    expect(weeksLedBy(snapshot, "demo-runner")).toEqual([]);
+    expect(weeksLedBy(snapshot)).toEqual([]);
+  });
   it("never treats a confirmed booking as actual attendance", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-02T12:00:00Z"));
     const upcoming = weeklyAnalytics(snapshot).find(w => w.run.status === "published")!;
@@ -47,6 +55,32 @@ describe("attendance analytics", () => {
     expect(metric.bookingUtilisation).toBe(Math.round(metric.confirmed / (13 * 19) * 100));
     expect(metric.attendanceUtilisation).toBe(Math.round(metric.present / (12 * 19) * 100));
     expect(metric.present).toBeLessThan(metric.confirmed);
+  });
+  it("averages recorded attendance and waitlists across completed weeks and counts distinct leaders", () => {
+    const snapshot = createDemoSnapshot(new Date("2026-10-02T12:00:00Z"));
+    const completed = snapshot.weeks.filter(week => week.status === "archived").slice(0, 2);
+    snapshot.weeks = completed;
+    snapshot.groups = completed.map((week, index) => ({
+      ...snapshot.groups.find(group => group.runId === week.id && group.number === 1)!,
+      leaderId: index === 0 ? "demo-leader" : "demo-admin",
+    }));
+    const [first, second] = snapshot.groups;
+    snapshot.attendance = [
+      { id: "present", runId: first.runId, groupId: first.id, memberId: "demo-runner", outcome: "present", recordedAt: completed[0].startsAt },
+      { id: "absent", runId: first.runId, groupId: first.id, memberId: "demo-leader", outcome: "absent", recordedAt: completed[0].startsAt },
+    ];
+    snapshot.bookings = ["demo-runner", "demo-leader"].map((memberId, index) => ({
+      id: `queue-${index}`, runId: first.runId, groupId: first.id, memberId,
+      status: "waitlisted" as const, source: "member" as const, bookedAt: completed[0].startsAt, version: 1,
+    }));
+
+    const [metric] = groupAnalytics(snapshot, new Date("2026-10-02T12:00:00Z"));
+    expect(metric.completedWeeks).toBe(2);
+    expect(metric.attendanceWeeks).toBe(1);
+    expect(metric.averagePresent).toBe(1);
+    expect(metric.averageWaitlisted).toBe(1);
+    expect(metric.leaderCount).toBe(2);
+    expect(snapshot.attendance.some(record => record.groupId === second.id)).toBe(false);
   });
   it("uses recorded waitlist joins, promotions and saved peak queues, not current bookings", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-02T12:00:00Z"));

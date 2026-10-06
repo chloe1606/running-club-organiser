@@ -32,6 +32,8 @@ export interface AuditEvent {
 
 export interface ClubConfig {
   location: string;
+  locations?: string[];
+  locationMaps?: Record<string, string>;
   timeZone: string;
   startTime: string;
   demoConfiguration: boolean;

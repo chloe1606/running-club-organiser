@@ -1,12 +1,19 @@
 import { createDemoSnapshot, demoPersonas } from "./demo-data";
-import { assertCanBook, assertCanPublish, bookingIsOpen, confirmedCount, nextBookingStatus, promoteFirstWaitlisted, type Group, type Run } from "./domain";
+import { assertCanBook, assertCanPublish, bookingCapacity, bookingIsOpen, confirmedCount, nextBookingStatus, promoteFirstWaitlisted, type Group, type Run } from "./domain";
 import type { PlatformSnapshot } from "./platform-types";
 import { createRunSchedule } from "./schedule";
 import { GatewayError } from "./gateway";
+import { DEFAULT_LOCATION_MAPS } from "./locations";
 
 // Process-local only: restarts reset this explicitly enabled, synthetic demonstration.
 let store: PlatformSnapshot | undefined;
 const requests = new Map<string, string>();
+function validDemoMapsUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && (url.hostname === "google.com" || url.hostname.endsWith(".google.com") || url.hostname === "maps.app.goo.gl");
+  } catch { return false; }
+}
 function enabled() {
   if (process.env.CLUB_DEMO_MODE !== "true") throw new GatewayError("Demo mode is disabled.", 404, "DEMO_DISABLED");
   store ??= createDemoSnapshot();
@@ -61,8 +68,8 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
   const promote = (groupId: string) => {
     const target = next.groups.find(g => g.id === groupId)!;
     const week = next.weeks.find(w => w.id === target.runId);
-    if (!week || !bookingIsOpen(week, now)) return;
-    while (confirmedCount(groupId, next.bookings) < target.capacity) {
+    if (!week || target.cancelled || !bookingIsOpen(week, now)) return;
+    while (confirmedCount(groupId, next.bookings, target) < bookingCapacity(target)) {
       const queued = promoteFirstWaitlisted(groupId, next.bookings);
       if (!queued) break;
       const member = next.members.find(m => m.id === queued.memberId);
@@ -81,6 +88,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     requireRun();
     if (!group || group.runId !== run!.id) throw new Error("Group not found in this run.");
     if (payload.groupVersion !== group.version) throw new GatewayError("This group changed. Refresh and try again.", 409, "STALE_VERSION");
+    if (group.cancelled && operation !== "cancelGroup") throw new Error("This group is not running.");
     return group;
   };
   const requireLeader = () => {
@@ -99,25 +107,81 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     const confirmed = old.status === "confirmed";
     old.status = "cancelled"; old.version++;
     const oldGroup = next.groups.find(g => g.id === old.groupId)!;
+    if (old.source === "member" && oldGroup.sweeperId === memberId) delete oldGroup.sweeperId;
     if (confirmed) promote(old.groupId);
     else queueEvent("withdrawn", old.groupId, old.memberId);
     oldGroup.version++;
   };
-  const book = (memberId: string, source: "member" | "assignment" = "member") => {
+  const book = (memberId: string, source: "member" | "assignment" = "member", volunteerAsSweeper = false) => {
     const member = eligible(memberId);
     if (source === "member" && !member.roles.includes("runner")) throw new Error("Runner role required.");
+    if (volunteerAsSweeper && !member.roles.includes("sweeper")) throw new Error("Sweeper role required.");
     if (source === "member") assertCanBook(run!, group!, next.bookings, memberId, now);
     const status = source === "assignment"
-      ? (confirmedCount(group!.id, next.bookings, group) <= Math.min(group!.capacity, 19) ? "confirmed" : "waitlisted")
+      ? (confirmedCount(group!.id, next.bookings, group) <= bookingCapacity(group!) ? "confirmed" : "waitlisted")
       : nextBookingStatus(group!, next.bookings);
     if (source === "assignment" && status === "waitlisted") throw new Error("This group has no room for an assignment.");
+    if (volunteerAsSweeper && status !== "confirmed") throw new Error("A sweeper volunteer needs a confirmed place in the group.");
+    if (volunteerAsSweeper && group!.sweeperId && group!.sweeperId !== memberId) throw new Error("This group already has a sweeper.");
+    if (volunteerAsSweeper) group!.sweeperId = memberId;
     next.bookings.push({ id: `demo-booking-${requestId}-${memberId}`, runId: run!.id, groupId: group!.id,
       memberId, status, bookedAt: now.toISOString(), source, version: 1 });
     if (status === "waitlisted") queueEvent("waitlistJoined", group!.id, memberId);
     group!.version++;
   };
   switch (operation) {
-    case "book": requireGroup(); book(actorId); break;
+    case "cancelGroup": {
+      requireGroup();
+      if (!admin && (!actor.roles.includes("leader") || group!.leaderId !== actorId)) throw new GatewayError("Assigned leader access required.", 403, "FORBIDDEN");
+      if (!admin && payload.reason !== "low-interest") throw new GatewayError("Only an administrator can mark a group not running because no leader is available.", 403, "FORBIDDEN");
+      if (payload.reason === "no-leader" && group!.leaderId) throw new Error("Remove the assigned leader before marking this group not running.");
+      if (!["low-interest", "no-leader"].includes(String(payload.reason))) throw new Error("Choose a supported reason for not running this group.");
+      if (!run || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) throw new Error("Only a future draft or published group can be marked not running.");
+      if (group!.cancelled) throw new Error("This group is already marked not running.");
+      group!.cancelled = true;
+      group!.cancellationReason = payload.reason as "low-interest" | "no-leader";
+      next.bookings.filter(booking => booking.runId === run.id && booking.groupId === group!.id && booking.status !== "cancelled")
+        .forEach(booking => { booking.status = "cancelled"; booking.version++; });
+      group!.version++;
+      run.version++;
+      break;
+    }
+    case "updateLocations": {
+      requireAdmin();
+      const locations = payload.locations;
+      const location = String(payload.location ?? "").trim();
+      if (!Array.isArray(locations) || !locations.length || locations.length > 30 ||
+          locations.some(value => typeof value !== "string" || !value.trim() || value.trim().length > 120) ||
+          new Set(locations.map(value => value.trim().toLowerCase())).size !== locations.length ||
+          !locations.includes(location)) throw new Error("Choose a saved location or add a unique location name.");
+      const removedLocations = (next.config.locations ?? []).filter(existing => !locations.some(value => value.toLowerCase() === existing.toLowerCase()));
+      if (next.weeks.some(week => removedLocations.includes(week.location ?? "") && ["draft", "published"].includes(week.status) && new Date(week.startsAt) > now)) {
+        throw new Error("A future week uses this location. Change that week's location before removing it.");
+      }
+      next.config.locations = locations.map(value => value.trim());
+      next.config.location = location;
+      const locationMaps = Object.assign({}, DEFAULT_LOCATION_MAPS, (payload.locationMaps as Record<string, string> | undefined) ?? next.config.locationMaps ?? {});
+      Object.keys(locationMaps).forEach(venue => { if (!next.config.locations!.includes(venue)) delete locationMaps[venue]; });
+      if (Object.entries(locationMaps).some(([venue, url]) => !next.config.locations!.includes(venue) || !validDemoMapsUrl(url))) {
+        throw new Error("Use valid Google Maps HTTPS links for saved venues.");
+      }
+      next.config.locationMaps = locationMaps;
+      break;
+    }
+    case "updateWeekLocation": {
+      requireAdmin();
+      requireRun();
+      if (!["draft", "published"].includes(run!.status) || new Date(run!.startsAt) <= now) throw new Error("Only a future draft or published week can change location.");
+      const location = String(payload.location ?? "").trim();
+      if (!next.config.locations?.includes(location)) throw new Error("Choose a saved venue for this week.");
+      run!.location = location;
+      const mapsUrl = next.config.locationMaps?.[location];
+      if (mapsUrl) run!.mapsUrl = mapsUrl;
+      else delete run!.mapsUrl;
+      run!.version++;
+      break;
+    }
+    case "book": requireGroup(); book(actorId, "member", payload.sweeper === true); break;
     case "leave": requireRun(); if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed."); leave(actorId); break;
     case "switchGroup":
     case "moveRunner": {
@@ -125,7 +189,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (operation === "moveRunner") requireAdmin();
       if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed.");
       const target = operation === "moveRunner" ? String(payload.memberId) : actorId;
-      leave(target); book(target); break;
+      leave(target); book(target, "member", operation === "switchGroup" && payload.sweeper === true); break;
     }
     case "createWeek": {
       requireAdmin();
@@ -133,18 +197,23 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       const parsed = new Date(`${date}T12:00:00Z`);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date || parsed.getUTCDay() !== 2) throw new Error("Choose a valid Tuesday.");
       if (next.weeks.some(w => w.id === `demo-run-${date}`)) throw new Error("This week already exists.");
-      const created: Run = { id: `demo-run-${date}`, ...createRunSchedule(date, now, next.config), status: "draft", version: 1 };
+      const locations = next.config.locations ?? [next.config.location].filter(location => !/\bDEMO\b/i.test(location));
+      const configuredLocation = next.config.location;
+      const location = String(payload.location || (locations.includes(configuredLocation) ? configuredLocation : locations[0]) || configuredLocation || "").trim();
+      if (!locations.includes(location) && !(next.config.demoConfiguration && !locations.length)) throw new Error("Choose a saved venue for this week.");
+      const created: Run = { id: `demo-run-${date}`, ...createRunSchedule(date, now, next.config), location,
+        ...(next.config.locationMaps?.[location] ? { mapsUrl: next.config.locationMaps[location] } : {}), status: "draft", version: 1 };
       const template = payload.copyFromRunId ? next.weeks.find(w => w.id === payload.copyFromRunId) : undefined;
       if (payload.copyFromRunId && !template) throw new Error("Source week not found.");
       next.weeks.push(created);
       for (const definition of createDemoSnapshot(now).groups.slice(0, 13)) {
         const copied = template ? next.groups.find(g => g.runId === template.id && g.number === definition.number) : undefined;
         next.groups.push({ ...definition, id: `${created.id}-group-${definition.number}`, runId: created.id,
-          leaderId: undefined, sweeperId: undefined, routeDescription: copied?.routeDescription ?? "", routeNeedsReview: Boolean(copied), version: 1 });
+          leaderId: undefined, sweeperId: undefined, routeDescription: copied?.routeDescription ?? "", routeNeedsReview: false, version: 1 });
       }
       break;
     }
-    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); if (next.groups.some(g => g.runId === run!.id && g.routeNeedsReview)) throw new Error("Review copied routes before publishing."); run!.status = "published"; run!.version++; break;
+    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); run!.status = "published"; run!.version++; break;
     case "cancelRun": {
       requireAdmin(); requireRun();
       if (!["published", "draft"].includes(run!.status)) throw new Error("This week cannot be cancelled.");
@@ -169,7 +238,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (!["draft", "published"].includes(run!.status)) throw new Error("This week is not editable.");
       if (new Date(run!.startsAt) <= now) throw new Error("Only future assignments can be edited.");
       const id = String(payload.memberId ?? "");
-      if (operation === "assignLeader" && (!id || !eligible(id).roles.includes("leader"))) throw new Error("Choose an active leader.");
+      if (operation === "assignLeader" && id && !eligible(id).roles.includes("leader")) throw new Error("Choose an active leader.");
       if (id && !eligible(id).roles.includes(operation === "assignLeader" ? "leader" : "sweeper")) throw new Error("Choose a member with the appropriate volunteer role.");
       const field = operation === "assignLeader" ? "leaderId" : "sweeperId";
       const otherField = operation === "assignLeader" ? "sweeperId" : "leaderId";
@@ -183,7 +252,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       }
       group![field] = id || undefined;
       if (existing) {
-        if (existing.status !== "confirmed" && confirmedCount(group!.id, next.bookings) >= group!.capacity) throw new Error("This group has no room for an assignment.");
+        if (existing.status !== "confirmed" && confirmedCount(group!.id, next.bookings, group) > bookingCapacity(group!)) throw new Error("This group has no room for an assignment.");
         existing.status = "confirmed"; existing.source = "assignment"; existing.version++;
       } else if (id) book(id, "assignment");
       promote(group!.id);
@@ -231,7 +300,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     }
     default: throw new Error("Unknown operation.");
   }
-  for (const item of next.groups) if (confirmedCount(item.id, next.bookings) > item.capacity) throw new Error("Group capacity exceeded.");
+  for (const item of next.groups) if (confirmedCount(item.id, next.bookings, item) > bookingCapacity(item)) throw new Error("Group capacity exceeded.");
   next.audit.unshift({ id: `demo-audit-${requestId}`, actorId, runId: run?.id ?? "", groupId: group?.id, memberId: String(payload.memberId ?? actorId), action: operation, at: now.toISOString(), requestId });
   store = next;
   requests.set(requestKey, fingerprint);

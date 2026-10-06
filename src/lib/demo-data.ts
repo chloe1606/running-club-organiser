@@ -1,12 +1,16 @@
 import type { PlatformSnapshot } from "./platform-types";
 import type { Run } from "./domain";
-import { clubDateTime, nextTuesdayDate, GROUP_CAPACITY } from "./schedule";
+import { BOOKING_CUTOFF, clubDateTime, nextTuesdayDate, GROUP_CAPACITY } from "./schedule";
+import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "./locations";
 
 export const demoPersonas = {
   runner: "demo-runner",
   leader: "demo-leader",
   admin: "demo-admin",
 } as const;
+
+const demoFirstNames = ["Jamie", "Taylor", "Robin", "Casey", "Jordan", "Charlie", "Avery", "Cameron", "Dana", "Ellis", "Finley", "Harper", "Jesse", "Kai", "Logan", "Micah", "Noor", "Parker", "Quinn", "Riley"];
+const demoLastNames = ["Brooks", "Patel", "Woods", "Clarke", "Reed", "Bennett", "Carter", "Diaz", "Evans", "Foster", "Green", "Hughes", "Ibrahim", "James", "Kim", "Lewis", "Morris", "Nguyen", "Ortiz", "Price"];
 
 /** Synthetic, reserved-example data. Never a fallback for a live storage failure. */
 export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
@@ -16,13 +20,13 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
     { id: demoPersonas.leader, name: "Priya Shah", email: "priya@example.test", roles: ["runner", "leader"], active: true, version: 1 },
     { id: demoPersonas.admin, name: "Sam Rivers", email: "sam@example.test", roles: ["runner", "leader", "admin"], active: true, version: 1 },
     ...Array.from({ length: 400 }, (_, i) => ({
-      id: `demo-member-${i + 1}`, name: `${["Jamie", "Taylor", "Robin", "Casey", "Jordan", "Charlie"][i % 6]} ${["Brooks", "Patel", "Woods", "Clarke", "Reed"][Math.floor(i / 6) % 5]} ${i + 1}`,
+      id: `demo-member-${i + 1}`, name: `${demoFirstNames[Math.floor(i / demoLastNames.length)]} ${demoLastNames[i % demoLastNames.length]}`,
       email: `runner${i + 1}@example.test`, roles: i < 11 ? ["runner", "leader"] : i >= 27 && i <= 40 ? ["runner", "sweeper"] : ["runner"], active: true, version: 1,
     })),
   ];
   const snapshot: PlatformSnapshot = {
     weeks: [], groups: [], bookings: [], members, attendance: [], audit: [],
-    config: { location: "Riverside Pavilion, Meadow Lane", startTime: "18:30", timeZone: "Europe/London", demoConfiguration: true },
+    config: { location: "Riverside Pavilion, Meadow Lane", locations: [...DEFAULT_LOCATIONS, "Riverside Pavilion, Meadow Lane"], locationMaps: { ...DEFAULT_LOCATION_MAPS }, startTime: "19:00", timeZone: "Europe/London", demoConfiguration: true },
     demo: true, currentMemberId: demoPersonas.runner,
   };
   const leaders = [demoPersonas.leader, demoPersonas.admin, ...members.slice(3, 14).map(m => m.id)];
@@ -31,9 +35,9 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
     date.setUTCDate(date.getUTCDate() - 7 * w);
     const iso = date.toISOString().slice(0, 10);
     const run: Run = {
-      id: `demo-run-${iso}`, startsAt: clubDateTime(iso, "18:30"),
+      id: `demo-run-${iso}`, startsAt: clubDateTime(iso, "19:00"),
       bookingOpensAt: w === 0 ? new Date(now.getTime() - 86400000).toISOString() : new Date(date.getTime() - 4 * 86400000).toISOString(),
-      bookingClosesAt: clubDateTime(iso, "17:30"), status: w ? "archived" : "published", version: 1,
+      bookingClosesAt: clubDateTime(iso, BOOKING_CUTOFF), status: w ? "archived" : "published", version: 1,
     };
     snapshot.weeks.push(run);
     for (let g = 0; g < 13; g++) {
@@ -76,6 +80,18 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
       });
     }
   }
+  const upcomingWeek = snapshot.weeks[0];
+  const noLeaderExample = snapshot.groups.find(group => group.runId === upcomingWeek.id && group.number === 12)!;
+  const lowInterestExample = snapshot.groups.find(group => group.runId === upcomingWeek.id && group.number === 13)!;
+  noLeaderExample.leaderId = undefined;
+  noLeaderExample.sweeperId = undefined;
+  noLeaderExample.cancelled = true;
+  noLeaderExample.cancellationReason = "no-leader";
+  lowInterestExample.cancelled = true;
+  lowInterestExample.cancellationReason = "low-interest";
+  const exampleCancelledGroupIds = new Set([noLeaderExample.id, lowInterestExample.id]);
+  snapshot.bookings.filter(booking => exampleCancelledGroupIds.has(booking.groupId) && booking.status !== "cancelled")
+    .forEach(booking => { booking.status = "cancelled"; booking.version++; });
   snapshot.audit.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
   return snapshot;
 }

@@ -3,11 +3,23 @@ import type { NextAuthOptions } from "next-auth";
 import EmailProvider from "next-auth/providers/email";
 import GoogleProvider from "next-auth/providers/google";
 import { createTransport } from "nodemailer";
+import { ZodError } from "zod";
 import { normalizeAuthEmail, prepareEmailToken, sheetsAuthAdapter } from "./auth-adapter";
 import { findActiveMemberByEmail } from "./sheets";
 
 const adapter = sheetsAuthAdapter();
 const LINK_SECONDS = 15 * 60;
+const safeAuthErrorCodes = new Set([
+  "OAUTH_CALLBACK_HANDLER_ERROR", "OAUTH_V1_GET_ACCESS_TOKEN_ERROR", "OAUTH_PARSE_PROFILE_ERROR",
+  "OAUTH_CALLBACK_ERROR", "CALLBACK_EMAIL_ERROR", "SIGNIN_OAUTH_ERROR", "SIGNIN_EMAIL_ERROR",
+  "adapter_error_createUser", "adapter_error_linkAccount", "adapter_error_getUserByAccount",
+]);
+const safeGatewayErrorCodes = new Set([
+  "NOT_CONFIGURED", "UNAVAILABLE", "UNAUTHORIZED", "WORKBOOK_MISMATCH",
+  "UNKNOWN_OPERATION", "AUTH_UNAVAILABLE", "LOCK_TIMEOUT", "INTERNAL_ERROR",
+  "INVALID_SCHEMA", "STATE_CORRUPT", "MIGRATION_REQUIRED", "RECOVERY_REQUIRED",
+  "NON_JSON_RESPONSE", "INVALID_RESPONSE",
+]);
 
 export function smtpTransportOptions(value: string, production = process.env.NODE_ENV === "production") {
   const url = new URL(value);
@@ -109,7 +121,18 @@ export const authOptions: NextAuthOptions = {
   debug: false,
   logger: {
     // Never log NextAuth metadata: it can contain bearer tokens and magic URLs.
-    error() { console.error("Authentication request failed."); },
+    error(code, metadata) {
+      const safeCode = process.env.NODE_ENV === "development" && safeAuthErrorCodes.has(code) ? code : "";
+      let reason = "";
+      if (safeCode.startsWith("adapter_error_")) {
+        if (metadata instanceof ZodError) reason = "; invalid auth record";
+        else if (metadata && typeof metadata === "object" && "code" in metadata &&
+          typeof metadata.code === "string" && safeGatewayErrorCodes.has(metadata.code)) {
+          reason = `; gateway: ${metadata.code}`;
+        }
+      }
+      console.error(safeCode ? `Authentication request failed (${safeCode}${reason}).` : "Authentication request failed.");
+    },
     warn() { console.warn("Authentication configuration warning."); },
     debug() {},
   },

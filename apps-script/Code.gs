@@ -64,7 +64,7 @@ function dispatch_(request) {
 function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   const operation = request.operation;
   const admin = actor.roles.includes("admin");
-  const adminOperations = ["createWeek", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner"];
+  const adminOperations = ["createWeek", "updateWeekLocation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner", "updateLocations"];
   if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
   let run;
   let group;
@@ -76,28 +76,58 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     if (snapshot.weeks.some((week) => clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) === request.date)) {
       fail_("WEEK_EXISTS", "A run already exists for this club-local date.");
     }
-    run = Object.assign({ id: "run-" + request.date, status: "draft", version: 1 }, schedule);
+    const locations = Array.isArray(snapshot.config.locations) ? snapshot.config.locations : [snapshot.config.location].filter((location) => location && !/\bDEMO\b/i.test(location));
+    const configuredLocation = snapshot.config.location;
+    const location = String(request.location || (locations.includes(configuredLocation) ? configuredLocation : locations[0]) ||
+      (snapshot.config.demoConfiguration ? configuredLocation : "")).trim();
+    if (!location || (!locations.includes(location) && !(snapshot.config.demoConfiguration && !locations.length))) fail_("INVALID_CONFIGURATION", "Choose a saved venue for this week.");
+    const locationMaps = snapshot.config.locationMaps || {};
+    run = Object.assign({ id: "run-" + request.date, status: "draft", version: 1, location,
+      ...(locationMaps[location] ? { mapsUrl: locationMaps[location] } : {}) }, schedule);
     let sourceGroups = [];
     if (request.copyFromRunId) {
       if (!snapshot.weeks.some((week) => week.id === request.copyFromRunId)) fail_("NOT_FOUND", "The source week does not exist.");
       sourceGroups = snapshot.groups.filter((entry) => entry.runId === request.copyFromRunId);
-      if (sourceGroups.length !== 13) fail_("INVALID_GROUPS", "The source week must have exactly thirteen groups.");
     }
     snapshot.weeks.push(run);
-    for (let number = 1; number <= 13; number++) {
-      const source = sourceGroups.find((entry) => entry.number === number);
-      const definition = groupDefinitions.find((entry) => entry.number === number);
+    groupDefinitions.slice().sort((left, right) => left.number - right.number).forEach((definition) => {
+      const source = sourceGroups.find((entry) => entry.id === request.copyFromRunId + "-" + definition.id) ||
+        sourceGroups.find((entry) => entry.number === definition.number);
       snapshot.groups.push({
-        id: run.id + "-" + definition.id, runId: run.id, number, version: 1,
-        name: definition.name || "Group " + number,
+        id: run.id + "-" + definition.id, runId: run.id, number: definition.number, version: 1,
+        name: definition.name || "Group " + definition.number,
         distanceLabel: definition.distanceLabel,
         paceLabel: definition.paceLabel,
-        capacity: 19,
+        capacity: definition.capacity,
         routeDescription: source && source.routeDescription || "",
-        routeNeedsReview: !!(source && source.routeDescription),
+        routeNeedsReview: false,
       });
-    }
+    });
     result = { runId: run.id, status: "draft" };
+  } else if (operation === "updateLocations") {
+    if (!Array.isArray(request.locations) || request.locations.length < 1 || request.locations.length > 30 ||
+        request.locations.some((location) => typeof location !== "string" || !location.trim() || location.trim().length > 120) ||
+        new Set(request.locations.map((location) => location.trim().toLowerCase())).size !== request.locations.length) {
+      fail_("INVALID_CONFIGURATION", "Supply 1–30 unique location names, each no longer than 120 characters.");
+    }
+    const locations = request.locations.map((location) => location.trim());
+    if (typeof request.location !== "string" || !locations.includes(request.location.trim())) {
+      fail_("INVALID_CONFIGURATION", "Select a location from the saved venue list.");
+    }
+    const removed = (snapshot.config.locations || []).filter((location) => !locations.some((candidate) => candidate.toLowerCase() === location.toLowerCase()));
+    if (snapshot.weeks.some((week) => removed.includes(week.location) && ["draft", "published"].includes(week.status) && new Date(week.startsAt) > new Date())) {
+      fail_("LOCATION_IN_USE", "A future week uses this venue. Change that week's location before removing it.");
+    }
+    snapshot.config.locations = clubLocationOptions_(Object.assign({}, snapshot.config, { locations }));
+    snapshot.config.location = request.location.trim();
+    const locationMaps = Object.assign({}, DEFAULT_CLUB_LOCATION_MAPS, request.locationMaps || snapshot.config.locationMaps || {});
+    Object.keys(locationMaps).forEach((venue) => { if (!snapshot.config.locations.includes(venue)) delete locationMaps[venue]; });
+    if (!locationMaps || typeof locationMaps !== "object" || Array.isArray(locationMaps) ||
+        Object.keys(locationMaps).some((venue) => !locations.includes(venue) || !validMapsUrl_(locationMaps[venue]))) {
+      fail_("INVALID_CONFIGURATION", "Supply valid Google Maps HTTPS links for saved venues.");
+    }
+    snapshot.config.locationMaps = locationMaps;
+    result = { location: snapshot.config.location };
   } else if (operation === "updateMember") {
     const member = snapshot.members.find((entry) => entry.id === request.memberId);
     if (!member) fail_("NOT_FOUND", "The member does not exist.");
@@ -142,7 +172,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     if (!run) fail_("NOT_FOUND", "The run does not exist.");
     expectedVersion_(run, request.runVersion);
     if (["archived", "cancelled"].includes(run.status)) fail_("RUN_CLOSED", "This run is read-only; cancelled runs retain their cancellation status.");
-    const runOperations = ["publishRun", "cancelRun", "archiveRun"];
+    const runOperations = ["updateWeekLocation", "publishRun", "cancelRun", "archiveRun"];
     if (!runOperations.includes(operation)) {
       const ownBooking = operation === "leave" && !request.groupId &&
         snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === actor.id && entry.status !== "cancelled");
@@ -150,9 +180,39 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       group = snapshot.groups.find((entry) => entry.id === groupId && entry.runId === run.id);
       if (!group) fail_("NOT_FOUND", "The selected group does not belong to this run.");
       if (operation !== "leave" || request.groupId || request.groupVersion !== undefined) expectedVersion_(group, request.groupVersion);
+      if (group.cancelled && operation !== "cancelGroup") fail_("GROUP_CANCELLED", "This group is not running.");
       touched.add(group.id);
     }
     switch (operation) {
+      case "cancelGroup": {
+        if (!group || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published group can be marked not running.");
+        if (group.cancelled) fail_("GROUP_CANCELLED", "This group is already marked not running.");
+        if (request.reason === "low-interest") {
+          assertGroupManager_(actor, group);
+        } else if (request.reason === "no-leader") {
+          if (!admin) fail_("FORBIDDEN", "Only an administrator can mark a group not running because no leader is available.");
+          if (group.leaderId) fail_("INVALID_GROUP_STATUS", "Remove the assigned leader before marking this group not running.");
+        } else fail_("INVALID_GROUP_STATUS", "Choose a supported reason for not running this group.");
+        group.cancelled = true;
+        group.cancellationReason = request.reason;
+        snapshot.bookings.filter((booking) => booking.groupId === group.id && booking.runId === run.id && booking.status !== "cancelled")
+          .forEach((booking) => cancelBooking_(snapshot, booking, auditContext));
+        result = { status: "cancelled", reason: request.reason };
+        break;
+      }
+      case "updateWeekLocation": {
+        if (!admin) fail_("FORBIDDEN", "Only administrators can change a week location.");
+        if (!["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published week can change location.");
+        const location = String(request.location || "").trim();
+        const locations = Array.isArray(snapshot.config.locations) ? snapshot.config.locations : [];
+        if (!locations.includes(location)) fail_("INVALID_CONFIGURATION", "Choose a saved venue for this week.");
+        run.location = location;
+        const mapsUrl = (snapshot.config.locationMaps || {})[location];
+        if (mapsUrl) run.mapsUrl = mapsUrl;
+        else delete run.mapsUrl;
+        result = { location, mapsUrl: mapsUrl || null };
+        break;
+      }
       case "publishRun":
         if (run.status !== "draft" || new Date(run.startsAt) <= now || new Date(run.bookingClosesAt) <= now) fail_("INVALID_PUBLISH", "Only future draft runs with an open booking window can be published.");
         if (snapshot.weeks.some((entry) => entry.id !== run.id && entry.status === "published" && new Date(entry.startsAt) > now)) fail_("PUBLISHED_RUN_EXISTS", "Another future run is already published.");
@@ -184,10 +244,16 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         const original = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
         if (operation === "book" && original) fail_("DUPLICATE_BOOKING", "You already have a booking for this run.");
         if (operation !== "book" && !original) fail_("NOT_FOUND", "There is no active booking to change.");
-        if ((original && original.source === "assignment") ||
-            snapshot.groups.some((entry) => entry.runId === run.id && (entry.leaderId === memberId || entry.sweeperId === memberId))) fail_("ASSIGNMENT_EXISTS", "An administrator must remove the assignment before this runner can change groups.");
+        const isLeader = snapshot.groups.some((entry) => entry.runId === run.id && entry.leaderId === memberId);
+        const sweeperGroup = snapshot.groups.find((entry) => entry.runId === run.id && entry.sweeperId === memberId);
+        const ownsSweeperVolunteerRole = Boolean(original && original.source === "member" && sweeperGroup?.id === original.groupId);
+        if ((original && original.source === "assignment") || isLeader || (sweeperGroup && !ownsSweeperVolunteerRole)) {
+          fail_("ASSIGNMENT_EXISTS", "An administrator must remove the assignment before this runner can change groups.");
+        }
+        if (request.sweeper === true && !member.roles.includes("sweeper")) fail_("FORBIDDEN", "An active sweeper role is required to volunteer.");
         if (operation === "leave") {
           if (original.groupId !== group.id) fail_("WRONG_GROUP", "The booking is not in this group.");
+          if (group.sweeperId === memberId && original.source === "member") delete group.sweeperId;
           cancelBooking_(snapshot, original, auditContext);
           promoteQueue_(snapshot, group, now, auditContext);
           result = { status: "cancelled" };
@@ -198,13 +264,20 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
           if (original) {
             const source = snapshot.groups.find((entry) => entry.id === original.groupId);
             if (request.sourceGroupVersion !== undefined) expectedVersion_(source, request.sourceGroupVersion);
+            if (source.sweeperId === memberId && original.source === "member") delete source.sweeperId;
             cancelBooking_(snapshot, original, auditContext);
             promoteQueue_(snapshot, source, now, auditContext);
             touched.add(source.id);
           }
+          if (request.sweeper === true && group.sweeperId && group.sweeperId !== memberId) {
+            fail_("ASSIGNMENT_EXISTS", "This group already has a sweeper.");
+          }
+          const status = occupantCount_(snapshot, group) < bookingCapacity_(group) ? "confirmed" : "waitlisted";
+          if (request.sweeper === true && status !== "confirmed") fail_("GROUP_FULL", "A sweeper volunteer needs a confirmed place in the group.");
+          if (request.sweeper === true) group.sweeperId = memberId;
           const booking = {
             id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId,
-            status: occupantCount_(snapshot, group) < group.capacity ? "confirmed" : "waitlisted",
+            status,
             source: "member", bookedAt: now.toISOString(), version: 1,
           };
           snapshot.bookings.push(booking);
@@ -265,7 +338,6 @@ function assignOccupant_(snapshot, run, group, request, now, auditContext) {
   const field = role + "Id";
   const previousId = group[field];
   const memberId = request.memberId;
-  if (!memberId && role === "leader") fail_("INVALID_ASSIGNMENT", "Choose an eligible leader.");
   if (memberId) {
     const member = snapshot.members.find((entry) => entry.id === memberId && entry.active && entry.roles.includes(role));
     if (!member) fail_("INVALID_ASSIGNMENT", "Choose an active member with the appropriate role.");
@@ -279,11 +351,11 @@ function assignOccupant_(snapshot, run, group, request, now, auditContext) {
     snapshot.bookings.filter((entry) => entry.runId === run.id && entry.groupId === group.id && entry.memberId === previousId && entry.source === "assignment" && entry.status !== "cancelled").forEach((entry) => cancelBooking_(snapshot, entry, auditContext));
   }
   if (memberId) {
+    group[field] = memberId;
     const booking = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
-    if (!(booking && booking.status === "confirmed") && ![group.leaderId, group.sweeperId].includes(memberId) && occupantCount_(snapshot, group) >= group.capacity) {
+    if (occupantCount_(snapshot, group) > bookingCapacity_(group)) {
       fail_("GROUP_FULL", "The assignment would exceed group capacity.");
     }
-    group[field] = memberId;
     if (booking) {
       if (booking.status !== "confirmed") {
         assertBookingOpen_(run, now);
@@ -300,13 +372,13 @@ function assignOccupant_(snapshot, run, group, request, now, auditContext) {
 
 function promoteQueue_(snapshot, group, now, auditContext) {
   const run = snapshot.weeks.find((entry) => entry.id === group.runId);
-  if (!run || !bookingOpen_(run, now)) return;
+  if (!run || group.cancelled || !bookingOpen_(run, now)) return;
   const queue = snapshot.bookings.filter((entry) => entry.groupId === group.id && entry.status === "waitlisted")
     .sort((a, b) => new Date(a.bookedAt).getTime() - new Date(b.bookedAt).getTime() || a.id.localeCompare(b.id));
   for (const booking of queue) {
     const member = snapshot.members.find((entry) => entry.id === booking.memberId && entry.active && entry.roles.includes("runner"));
     if (!member) { cancelBooking_(snapshot, booking, auditContext); continue; }
-    if (occupantCount_(snapshot, group) >= group.capacity) break;
+    if (occupantCount_(snapshot, group) >= bookingCapacity_(group)) break;
     booking.status = "confirmed";
     booking.version++;
     queueAudit_(snapshot, booking, "promoted", auditContext);
@@ -318,6 +390,10 @@ function occupantCount_(snapshot, group) {
   if (group.leaderId) ids.add(group.leaderId);
   if (group.sweeperId) ids.add(group.sweeperId);
   return ids.size;
+}
+
+function bookingCapacity_(group) {
+  return Math.max(0, Math.min(group.capacity, 20) - (group.leaderId ? 0 : 1));
 }
 
 function cancelBooking_(snapshot, booking, auditContext) {
@@ -349,6 +425,11 @@ function assertGroupManager_(actor, group) {
   if (!actor.roles.includes("admin") && !(actor.roles.includes("leader") && group.leaderId === actor.id)) fail_("FORBIDDEN", "Only the assigned leader or an administrator can manage this group.");
 }
 function normalizeEmail_(email) { return typeof email === "string" ? email.trim().toLowerCase() : ""; }
+function validMapsUrl_(value) {
+  return typeof value === "string" && value.length <= 2000 &&
+    (/^https:\/\/(?:[a-z0-9-]+\.)*google\.[a-z.]+\/maps(?:[/?#]|$)/i.test(value) ||
+     /^https:\/\/maps\.app\.goo\.gl\/[A-Za-z0-9]+(?:\?.*)?$/i.test(value));
+}
 function requestFingerprint_(request) {
   const fields = Object.keys(request).filter((key) => key !== "secret" && key !== "spreadsheetId").sort();
   return JSON.stringify(fields.map((key) => [key, request[key]]));
