@@ -9,6 +9,9 @@ export const demoPersonas = {
   admin: "demo-admin",
 } as const;
 
+const demoFirstNames = ["Jamie", "Taylor", "Robin", "Casey", "Jordan", "Charlie", "Avery", "Cameron", "Dana", "Ellis", "Finley", "Harper", "Jesse", "Kai", "Logan", "Micah", "Noor", "Parker", "Quinn", "Riley"];
+const demoLastNames = ["Brooks", "Patel", "Woods", "Clarke", "Reed", "Bennett", "Carter", "Diaz", "Evans", "Foster", "Green", "Hughes", "Ibrahim", "James", "Kim", "Lewis", "Morris", "Nguyen", "Ortiz", "Price"];
+
 /** Synthetic, reserved-example data. Never a fallback for a live storage failure. */
 export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
   const upcoming = nextTuesdayDate(now);
@@ -17,7 +20,7 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
     { id: demoPersonas.leader, name: "Priya Shah", email: "priya@example.test", roles: ["runner", "leader"], active: true, version: 1 },
     { id: demoPersonas.admin, name: "Sam Rivers", email: "sam@example.test", roles: ["runner", "leader", "admin"], active: true, version: 1 },
     ...Array.from({ length: 400 }, (_, i) => ({
-      id: `demo-member-${i + 1}`, name: `${["Jamie", "Taylor", "Robin", "Casey", "Jordan", "Charlie"][i % 6]} ${["Brooks", "Patel", "Woods", "Clarke", "Reed"][Math.floor(i / 6) % 5]} ${i + 1}`,
+      id: `demo-member-${i + 1}`, name: `${demoFirstNames[Math.floor(i / demoLastNames.length)]} ${demoLastNames[i % demoLastNames.length]}`,
       email: `runner${i + 1}@example.test`, roles: i < 11 ? ["runner", "leader"] : i >= 27 && i <= 40 ? ["runner", "sweeper"] : ["runner"], active: true, version: 1,
     })),
   ];
@@ -77,6 +80,18 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
       });
     }
   }
+  const upcomingWeek = snapshot.weeks[0];
+  const noLeaderExample = snapshot.groups.find(group => group.runId === upcomingWeek.id && group.number === 12)!;
+  const lowInterestExample = snapshot.groups.find(group => group.runId === upcomingWeek.id && group.number === 13)!;
+  noLeaderExample.leaderId = undefined;
+  noLeaderExample.sweeperId = undefined;
+  noLeaderExample.cancelled = true;
+  noLeaderExample.cancellationReason = "no-leader";
+  lowInterestExample.cancelled = true;
+  lowInterestExample.cancellationReason = "low-interest";
+  const exampleCancelledGroupIds = new Set([noLeaderExample.id, lowInterestExample.id]);
+  snapshot.bookings.filter(booking => exampleCancelledGroupIds.has(booking.groupId) && booking.status !== "cancelled")
+    .forEach(booking => { booking.status = "cancelled"; booking.version++; });
   snapshot.audit.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
   return snapshot;
 }

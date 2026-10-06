@@ -16,4 +16,14 @@ describe("searchable select", () => {
     expect(html).not.toContain("Type to filter");
     expect(html).not.toContain("role=\"listbox\"");
   });
+  it("shows None as the selected default for an unassigned volunteer", () => {
+    const html = renderToStaticMarkup(createElement(SearchableSelect, {
+      label: "Group 1 · Leader",
+      value: "",
+      options: [{ value: "", label: "None" }, { value: "leader-1", label: "Taylor Example" }],
+      placeholder: "None",
+      onChange: vi.fn(),
+    }));
+    expect(html).toContain(">None</span>");
+  });
 });

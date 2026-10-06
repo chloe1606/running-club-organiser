@@ -28,6 +28,8 @@ export interface Group extends Versioned {
   sweeperId?: string;
   routeDescription?: string;
   routeNeedsReview?: boolean;
+  cancelled?: boolean;
+  cancellationReason?: "low-interest" | "no-leader";
   capacity: number;
 }
 

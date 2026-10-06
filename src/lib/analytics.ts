@@ -48,11 +48,18 @@ export function groupAnalytics(snapshot: PlatformSnapshot, now = new Date()) {
     const completedIds = new Set(completed.map(g => g.id));
     const attendanceCapacity = completed.reduce((n, g) => n + g.capacity, 0);
     const actual = snapshot.attendance.filter(a => completedIds.has(a.groupId));
+    const attendanceWeeks = completed.filter(group => snapshot.attendance.some(record => record.groupId === group.id)).length;
+    const waitlisted = snapshot.bookings.filter(booking => completedIds.has(booking.groupId) && booking.status === "waitlisted").length;
+    const leaderCount = new Set(completed.map(group => group.leaderId).filter((id): id is string => Boolean(id))).size;
     const known = new Set(actual.map(a => `${a.groupId}:${a.memberId}`));
     const attendanceUnknown = snapshot.bookings.filter(b => completedIds.has(b.groupId) && b.status === "confirmed" && !known.has(`${b.groupId}:${b.memberId}`)).length;
     const confirmed = snapshot.bookings.filter(b => ids.has(b.groupId) && b.status === "confirmed").length;
     const present = actual.filter(a => a.outcome === "present").length;
     return { number, capacity, confirmed, present, attendanceUnknown, attendanceRecorded: actual.length,
+      completedWeeks: completed.length, attendanceWeeks,
+      averagePresent: attendanceWeeks ? present / attendanceWeeks : undefined,
+      averageWaitlisted: completed.length ? waitlisted / completed.length : undefined,
+      leaderCount,
       bookingUtilisation: capacity ? Math.round(confirmed / capacity * 100) : undefined,
       attendanceUtilisation: attendanceCapacity && actual.length ? Math.round(present / attendanceCapacity * 100) : undefined };
   });

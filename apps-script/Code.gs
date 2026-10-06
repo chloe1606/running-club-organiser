@@ -180,9 +180,26 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       group = snapshot.groups.find((entry) => entry.id === groupId && entry.runId === run.id);
       if (!group) fail_("NOT_FOUND", "The selected group does not belong to this run.");
       if (operation !== "leave" || request.groupId || request.groupVersion !== undefined) expectedVersion_(group, request.groupVersion);
+      if (group.cancelled && operation !== "cancelGroup") fail_("GROUP_CANCELLED", "This group is not running.");
       touched.add(group.id);
     }
     switch (operation) {
+      case "cancelGroup": {
+        if (!group || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published group can be marked not running.");
+        if (group.cancelled) fail_("GROUP_CANCELLED", "This group is already marked not running.");
+        if (request.reason === "low-interest") {
+          assertGroupManager_(actor, group);
+        } else if (request.reason === "no-leader") {
+          if (!admin) fail_("FORBIDDEN", "Only an administrator can mark a group not running because no leader is available.");
+          if (group.leaderId) fail_("INVALID_GROUP_STATUS", "Remove the assigned leader before marking this group not running.");
+        } else fail_("INVALID_GROUP_STATUS", "Choose a supported reason for not running this group.");
+        group.cancelled = true;
+        group.cancellationReason = request.reason;
+        snapshot.bookings.filter((booking) => booking.groupId === group.id && booking.runId === run.id && booking.status !== "cancelled")
+          .forEach((booking) => cancelBooking_(snapshot, booking, auditContext));
+        result = { status: "cancelled", reason: request.reason };
+        break;
+      }
       case "updateWeekLocation": {
         if (!admin) fail_("FORBIDDEN", "Only administrators can change a week location.");
         if (!["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published week can change location.");
@@ -321,7 +338,6 @@ function assignOccupant_(snapshot, run, group, request, now, auditContext) {
   const field = role + "Id";
   const previousId = group[field];
   const memberId = request.memberId;
-  if (!memberId && role === "leader") fail_("INVALID_ASSIGNMENT", "Choose an eligible leader.");
   if (memberId) {
     const member = snapshot.members.find((entry) => entry.id === memberId && entry.active && entry.roles.includes(role));
     if (!member) fail_("INVALID_ASSIGNMENT", "Choose an active member with the appropriate role.");
@@ -356,7 +372,7 @@ function assignOccupant_(snapshot, run, group, request, now, auditContext) {
 
 function promoteQueue_(snapshot, group, now, auditContext) {
   const run = snapshot.weeks.find((entry) => entry.id === group.runId);
-  if (!run || !bookingOpen_(run, now)) return;
+  if (!run || group.cancelled || !bookingOpen_(run, now)) return;
   const queue = snapshot.bookings.filter((entry) => entry.groupId === group.id && entry.status === "waitlisted")
     .sort((a, b) => new Date(a.bookedAt).getTime() - new Date(b.bookedAt).getTime() || a.id.localeCompare(b.id));
   for (const booking of queue) {

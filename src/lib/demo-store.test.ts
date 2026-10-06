@@ -39,8 +39,13 @@ describe("isolated explicit demo", () => {
     const result = snapshotSchema.safeParse({ ...snapshot, demo: false });
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
     expect(snapshot.members.every(m => m.email.endsWith("@example.test"))).toBe(true);
+    expect(new Set(snapshot.members.map(member => member.name)).size).toBe(snapshot.members.length);
+    expect(snapshot.members.every(member => !/\s\d+$/.test(member.name))).toBe(true);
     expect(new Set(snapshot.groups.slice(0, 13).map(g => confirmedCount(g.id, snapshot.bookings))).size).toBeGreaterThan(5);
     expect(snapshot.groups.every(g => confirmedCount(g.id, snapshot.bookings) <= g.capacity)).toBe(true);
+    const upcomingGroups = snapshot.groups.filter(group => group.runId === snapshot.weeks[0].id);
+    expect(upcomingGroups.find(group => group.cancellationReason === "low-interest")?.cancelled).toBe(true);
+    expect(upcomingGroups.find(group => group.cancellationReason === "no-leader")).toMatchObject({ cancelled: true, leaderId: undefined });
   });
   it("uses club-local Tuesday, including DST change, rather than a hard-coded week", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-23T12:00:00Z"));
@@ -177,6 +182,14 @@ describe("isolated explicit demo", () => {
     expect(snapshot.bookings.find(b => b.runId === run.id && b.memberId === replacement.id)!.source).toBe("assignment");
     expect(confirmedCount(group.id, snapshot.bookings)).toBe(beforeCount);
   });
+  it("clears a leader assignment when None is selected", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    const group = getDemoSnapshot("admin").groups.find(g => g.runId === run.id && g.leaderId === "demo-leader")!;
+    mutateDemo("assignLeader", { requestId: randomUUID(), runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, memberId: "" }, "admin");
+    const snapshot = getDemoSnapshot("admin");
+    expect(snapshot.groups.find(g => g.id === group.id)!.leaderId).toBeUndefined();
+    expect(snapshot.bookings.find(b => b.runId === run.id && b.groupId === group.id && b.memberId === "demo-leader")!.status).toBe("cancelled");
+  });
   it("keeps the whole state unchanged when a runner move fails", async () => {
     const { getDemoSnapshot, mutateDemo, run, payload } = await setup();
     const before = getDemoSnapshot("admin");
@@ -208,6 +221,23 @@ describe("isolated explicit demo", () => {
     expect(after.bookings.find(b => b.runId === run.id && b.memberId === "demo-runner")).toMatchObject({
       groupId: group.id, status: "confirmed", source: "member",
     });
+  });
+  it("lets an assigned leader cancel their group for low interest and blocks new bookings", async () => {
+    const { getDemoSnapshot, mutateDemo, run } = await setup();
+    const before = getDemoSnapshot("admin");
+    const group = before.groups.find(g => g.runId === run.id && g.leaderId === "demo-leader")!;
+    const activeIds = before.bookings.filter(b => b.groupId === group.id && b.status !== "cancelled").map(b => b.id);
+    const cancelled = mutateDemo("cancelGroup", {
+      requestId: randomUUID(), runId: run.id, runVersion: run.version,
+      groupId: group.id, groupVersion: group.version, reason: "low-interest",
+    }, "leader");
+    const cancelledGroup = cancelled.groups.find(g => g.id === group.id)!;
+    expect(cancelledGroup).toMatchObject({ cancelled: true, cancellationReason: "low-interest" });
+    expect(cancelled.bookings.filter(b => activeIds.includes(b.id)).every(b => b.status === "cancelled")).toBe(true);
+    expect(() => mutateDemo("book", {
+      requestId: randomUUID(), runId: run.id, runVersion: cancelled.weeks.find(w => w.id === run.id)!.version,
+      groupId: group.id, groupVersion: cancelledGroup.version,
+    }, "runner")).toThrow("not running");
   });
   it("cancels future ordinary bookings and promotes the queue when runner eligibility is removed", async () => {
     const { getDemoSnapshot, mutateDemo, run, group } = await setup();

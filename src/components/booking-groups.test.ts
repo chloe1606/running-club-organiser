@@ -76,14 +76,26 @@ describe("runner group UI", () => {
     snapshot.weeks[0].status = "archived";
     const html = render(snapshot);
     expect(html).toContain("Booking is closed for this week.");
-    expect(html.match(/disabled=""/g)).toHaveLength(13);
+    expect(html.match(/disabled=""/g)).toHaveLength(11);
+  });
+  it("shows cancelled groups as not running without a booking action", () => {
+    const { snapshot, groups } = fixture();
+    groups[0].cancelled = true;
+    groups[0].cancellationReason = "low-interest";
+    const html = render(snapshot);
+    expect(html).toContain("group-cancelled");
+    expect(html).toContain("Not running");
+    expect(html).toContain("This group is not running this week.");
+    const cancelledCard = html.match(/<article class="group[^>]*group-cancelled[^>]*>[\s\S]*?<\/article>/)?.[0];
+    expect(cancelledCard).toBeDefined();
+    expect(cancelledCard).not.toContain("<button");
   });
   it("protects assigned volunteers from self-service leaving and switching", () => {
     const { snapshot } = fixture();
     snapshot.currentMemberId = "demo-leader";
     const html = render(snapshot);
     expect(html).toContain("assigned volunteer; ask an administrator to change this assignment.");
-    expect(html.match(/disabled=""/g)).toHaveLength(13);
+    expect(html.match(/disabled=""/g)).toHaveLength(11);
     expect(html).not.toContain("@example.test");
   });
   it("shows zero active bookings for cancelled groups despite preserved volunteer fields", () => {

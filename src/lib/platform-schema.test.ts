@@ -54,6 +54,18 @@ describe("snapshot integrity", () => {
     expect(mutationSchema.safeParse({ operation: "switchGroup", ...base, sweeper: false }).success).toBe(true);
     expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: "yes" }).success).toBe(false);
   });
+  it("accepts a group cancellation with a supported reason", () => {
+    const base = { requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };
+    expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "low-interest" }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "no-leader" }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "weather" }).success).toBe(false);
+  });
+  it("accepts None when clearing a leader assignment", () => {
+    expect(mutationSchema.safeParse({
+      operation: "assignLeader", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d",
+      runId: "w", runVersion: 1, groupId: "g", groupVersion: 1, memberId: "",
+    }).success).toBe(true);
+  });
   it("accepts an optional boolean sweeper choice on runner booking mutations", () => {
     const base = { requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };
     expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: true }).success).toBe(true);

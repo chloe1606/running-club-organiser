@@ -68,7 +68,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
   const promote = (groupId: string) => {
     const target = next.groups.find(g => g.id === groupId)!;
     const week = next.weeks.find(w => w.id === target.runId);
-    if (!week || !bookingIsOpen(week, now)) return;
+    if (!week || target.cancelled || !bookingIsOpen(week, now)) return;
     while (confirmedCount(groupId, next.bookings) < target.capacity) {
       const queued = promoteFirstWaitlisted(groupId, next.bookings);
       if (!queued) break;
@@ -88,6 +88,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     requireRun();
     if (!group || group.runId !== run!.id) throw new Error("Group not found in this run.");
     if (payload.groupVersion !== group.version) throw new GatewayError("This group changed. Refresh and try again.", 409, "STALE_VERSION");
+    if (group.cancelled && operation !== "cancelGroup") throw new Error("This group is not running.");
     return group;
   };
   const requireLeader = () => {
@@ -129,6 +130,22 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     group!.version++;
   };
   switch (operation) {
+    case "cancelGroup": {
+      requireGroup();
+      if (!admin && (!actor.roles.includes("leader") || group!.leaderId !== actorId)) throw new GatewayError("Assigned leader access required.", 403, "FORBIDDEN");
+      if (!admin && payload.reason !== "low-interest") throw new GatewayError("Only an administrator can mark a group not running because no leader is available.", 403, "FORBIDDEN");
+      if (payload.reason === "no-leader" && group!.leaderId) throw new Error("Remove the assigned leader before marking this group not running.");
+      if (!["low-interest", "no-leader"].includes(String(payload.reason))) throw new Error("Choose a supported reason for not running this group.");
+      if (!run || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) throw new Error("Only a future draft or published group can be marked not running.");
+      if (group!.cancelled) throw new Error("This group is already marked not running.");
+      group!.cancelled = true;
+      group!.cancellationReason = payload.reason as "low-interest" | "no-leader";
+      next.bookings.filter(booking => booking.runId === run.id && booking.groupId === group!.id && booking.status !== "cancelled")
+        .forEach(booking => { booking.status = "cancelled"; booking.version++; });
+      group!.version++;
+      run.version++;
+      break;
+    }
     case "updateLocations": {
       requireAdmin();
       const locations = payload.locations;
@@ -221,7 +238,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (!["draft", "published"].includes(run!.status)) throw new Error("This week is not editable.");
       if (new Date(run!.startsAt) <= now) throw new Error("Only future assignments can be edited.");
       const id = String(payload.memberId ?? "");
-      if (operation === "assignLeader" && (!id || !eligible(id).roles.includes("leader"))) throw new Error("Choose an active leader.");
+      if (operation === "assignLeader" && id && !eligible(id).roles.includes("leader")) throw new Error("Choose an active leader.");
       if (id && !eligible(id).roles.includes(operation === "assignLeader" ? "leader" : "sweeper")) throw new Error("Choose a member with the appropriate volunteer role.");
       const field = operation === "assignLeader" ? "leaderId" : "sweeperId";
       const otherField = operation === "assignLeader" ? "sweeperId" : "leaderId";

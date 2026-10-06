@@ -511,7 +511,7 @@ function validatePlatform_(snapshot) {
       !Number.isFinite(group.number) || group.number <= 0 || group.number > 20 ||
         typeof group.paceLabel !== "string" || !group.paceLabel.trim() ||
         !Number.isInteger(group.version) || group.version < 1) fail_("INVALID_GROUPS", "Invalid group capacity or version.");
-    if (live && occupantCount_(snapshot, group) > group.capacity) fail_("GROUP_FULL", "Existing occupants exceed group capacity; reconcile legacy data before migration.");
+    if (live && !group.cancelled && occupantCount_(snapshot, group) > group.capacity) fail_("GROUP_FULL", "Existing occupants exceed group capacity; reconcile legacy data before migration.");
     ["leader", "sweeper"].forEach((role) => {
       const id = group[role + "Id"];
       if (!id) return;

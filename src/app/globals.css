@@ -121,6 +121,12 @@ caption { text-align: left; font-weight: 700; margin-bottom: .7rem; }
 .chart { display: grid; gap: .6rem; margin-top: 1.5rem; }
 .chart-row { display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: .6rem; font-size: .75rem; }
 .chart-track { display: flex; height: 17px; border-radius: 2px; overflow: hidden; background: #f5f6f1; }
+.average-attendance-chart { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: .45rem 1.25rem; margin: .85rem 0 1.2rem; }
+.average-attendance-row { display: grid; grid-template-columns: minmax(4.5rem, auto) minmax(2rem, 1fr) 2.7rem; align-items: center; gap: .55rem; min-width: 0; font-size: .76rem; }
+.average-attendance-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.average-attendance-track { height: 8px; min-width: 0; overflow: hidden; border-radius: 99px; background: #e8e9e1; }
+.average-attendance-track span { display: block; height: 100%; border-radius: inherit; background: #82917b; }
+.average-attendance-row strong { color: #435b4b; font-variant-numeric: tabular-nums; text-align: right; }
 .chart-present { background: #397d51; }.chart-absent { background: #bc5549; }.chart-unknown { background: #c9ccbf; }
 .legend { display: flex; gap: 1rem; font-size: .78rem; }.legend span:nth-child(1) { color: #397d51; }.legend span:nth-child(2) { color: #a23e32; }.legend span:nth-child(3) { color: #61665a; }
 .member-list { max-height: 600px; overflow: auto; padding: .2rem; }
@@ -202,6 +208,17 @@ h2 { font-size: 1.8rem; }
 .group { border-radius: 5px; }
 .group { background: #fffefa; box-shadow: 0 2px 9px rgb(43 44 35 / 4%); }
 .my-group { border-color: #849281; background: #f5f7f0; }
+.group-cancelled { border-color: #d4d3cc; background: #ecece7; box-shadow: none; color: #696a64; }
+.group-cancelled > * { opacity: .72; }
+.group-cancelled .group-closed-badge, .group-cancelled .group-cancelled-message { opacity: 1; }
+.group-closed-badge { background: #d8d8d1; color: #4e504a; }
+.group-cancelled-message { margin-top: auto !important; padding: .55rem .65rem; border-top: 1px solid #d4d3cc; color: #575953; font-weight: 700; }
+.group-cancel-action, .no-leader-action { justify-self: start; font-size: .8rem; }
+.admin-group-assignment { display: grid; align-content: start; gap: .45rem; min-width: 0; }
+.admin-group-actions { display: flex; flex-wrap: wrap; gap: .35rem; min-width: 0; }
+.admin-group-actions button { max-width: 100%; min-height: 28px; padding: .2rem .42rem; border: 1px solid #d8aaa3; border-radius: 4px; background: #fff9f7; color: #9a4038; font-size: .68rem; font-weight: 650; line-height: 1.15; white-space: normal; }
+.admin-group-actions button:hover:not(:disabled) { border-color: #b86c62; background: #f8eae7; color: #7d2c25; }
+.admin-group-actions button:disabled { background: #f3f1ed; color: #8b8881; border-color: #d8d5cd; }
 .group-number { width: 42px; height: 42px; color: #394d3d; background: #e8ece3; border-radius: 50%; font-variant-numeric: tabular-nums; }
 .occupancy { background: #e7e7e1; }
 .occupancy span { background: #82917b; }

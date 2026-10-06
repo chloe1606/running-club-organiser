@@ -24,6 +24,7 @@ export const snapshotSchema = z.object({
     distanceLabel: z.string().optional(), name: z.string().optional(),
     leaderId: z.string().optional(), sweeperId: z.string().optional(),
     routeDescription: z.string().optional(), routeNeedsReview: z.boolean().optional(),
+    cancelled: z.boolean().optional(), cancellationReason: z.enum(["low-interest", "no-leader"]).optional(),
   })),
   bookings: z.array(z.object({
     id, runId: id, groupId: id, memberId: id, version,
@@ -119,9 +120,10 @@ export const mutationSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("cancelRun"), ...week, cancellationReason: z.string().trim().min(3).max(500) }),
   z.object({ operation: z.literal("archiveRun"), ...week }),
   z.object({ operation: z.literal("updateRoute"), ...group, routeDescription: z.string().trim().min(3).max(4000) }),
-  z.object({ operation: z.literal("assignLeader"), ...group, memberId: id }),
+  z.object({ operation: z.literal("assignLeader"), ...group, memberId: z.string().max(120) }),
   z.object({ operation: z.literal("assignSweeper"), ...group, memberId: z.string().max(120).optional() }),
   z.object({ operation: z.literal("recordAttendance"), ...group, memberId: id, outcome: z.enum(["present", "absent"]) }),
+  z.object({ operation: z.literal("cancelGroup"), ...group, reason: z.enum(["low-interest", "no-leader"]) }),
   z.object({ operation: z.literal("updateMember"), ...base, memberId: id, memberVersion: version, name: z.string().trim().min(1).max(100), roles: memberRoles, active: z.boolean() }),
   z.object({ operation: z.literal("updateLocations"), ...base, location: z.string().trim().min(1).max(120), locations: z.array(z.string().trim().min(1).max(120)).min(1).max(30).superRefine((locations, context) => {
     if (new Set(locations.map((location) => location.toLowerCase())).size !== locations.length) context.addIssue({ code: "custom", message: "Venue names must be unique." });

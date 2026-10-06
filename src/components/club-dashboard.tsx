@@ -179,6 +179,11 @@ function LeaderGroup({ snapshot, run, group, mutate, pending }: { snapshot: Plat
   return <article className="panel">
     <div className="section-title"><h2>Group {group.number} · {group.paceLabel}</h2><span className="badge">{confirmed.length} confirmed</span></div>
     <p>Leader: {memberName(snapshot, group.leaderId)} · {group.distanceLabel ?? "Distance to be confirmed"}</p>
+    {group.cancelled ? <p className="notice">This group is not running ({group.cancellationReason === "no-leader" ? "no leader available" : "insufficient interest"}).</p> : ["draft", "published"].includes(run.status) && new Date(run.startsAt) > new Date() && <button type="button" className="secondary group-cancel-action" disabled={pending} onClick={() => {
+      if (window.confirm(`Cancel Group ${group.number} for insufficient interest? Existing bookings will be cancelled.`)) {
+        void mutate("cancelGroup", { ...payload, reason: "low-interest" });
+      }
+    }}>Cancel group · low interest</button>}
     <RouteEditor run={run} group={group} mutate={mutate} pending={pending} />
     <h3 className="subheading">Attendance roster</h3>
     <p className="hint">Unknown means no attendance has been recorded. Record outcomes after the run starts.</p>
@@ -238,6 +243,7 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
   const [venueMapsUrl, setVenueMapsUrl] = useState(snapshot.config.locationMaps?.[initialVenueSelection] ?? "");
   const totals = weeklyAnalytics(snapshot);
   const popularity = groupAnalytics(snapshot);
+  const maxAveragePresent = Math.max(0, ...popularity.map(group => group.averagePresent ?? 0));
   const queueMetrics = waitlistAnalytics(snapshot);
   const history = totals.filter(w => new Date(w.run.startsAt) <= new Date()).slice(-12);
   const totalPresent = history.reduce((n, w) => n + w.present, 0);
@@ -307,13 +313,27 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
       </details>
     </section>}
     {run && <section className="panel"><h2>Volunteers</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
-      <div className="assignment-grid">{groups.map(g => <SearchableSelect key={g.id}
-        label={`Group ${g.number} · ${confirmedCount(g.id, snapshot.bookings)}/${g.capacity} · Leader`}
-        value={g.leaderId ?? ""} placeholder="Assign leader"
-        options={snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => ({ value: m.id, label: m.name }))}
-        disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date()}
-        onChange={memberId => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId })}
-      />)}</div>
+      <div className="assignment-grid">{groups.map(g => <div className="admin-group-assignment" key={g.id}>
+        <SearchableSelect
+          label={`Group ${g.number} · ${confirmedCount(g.id, snapshot.bookings)}/${g.capacity} · Leader`}
+          value={g.leaderId ?? ""} placeholder="None"
+          options={[{ value: "", label: "None" }, ...snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => ({ value: m.id, label: m.name }))]}
+          disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date() || g.cancelled === true}
+          onChange={memberId => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId })}
+        />
+        {g.cancelled ? <span className="hint">Not running · {g.cancellationReason === "no-leader" ? "no leader available" : "insufficient interest"}</span> : ["draft", "published"].includes(run.status) && new Date(run.startsAt) > new Date() && <div className="admin-group-actions">
+          {!g.leaderId && <button type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
+            if (window.confirm(`Mark Group ${g.number} as not held because no leader is available? Existing bookings will be cancelled.`)) {
+              void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "no-leader" });
+            }
+          }}>Cancel · no leader</button>}
+          <button type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
+            if (window.confirm(`Cancel Group ${g.number} for insufficient interest? Existing bookings will be cancelled.`)) {
+              void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "low-interest" });
+            }
+          }}>Cancel · low interest</button>
+        </div>}
+      </div>)}</div>
     </section>}
     {run && <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Runner moves</summary>
@@ -346,8 +366,16 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
         const present = actual.filter(a => a.outcome === "present").length;
         return <tr key={group.id}><td>Group {group.number} · {group.paceLabel}</td><td>{confirmed.length} / {group.capacity}</td><td>{Math.round(confirmed.length / group.capacity * 100)}%</td><td>{snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").length}</td><td>{present}</td><td>{new Date(run.startsAt) > new Date() ? "Not started" : !actual.length ? "Unknown / not recorded" : `${Math.round(present / group.capacity * 100)}% (lower bound)`}</td><td>{actual.filter(a => a.outcome === "absent").length}</td><td>{confirmed.filter(b => !known.has(b.memberId)).length}</td></tr>;
       })}</tbody></table></div>}
-      <div className="table-wrap"><table><caption>Group popularity: confirmed bookings versus actual attendance</caption><thead><tr><th>Group</th><th>Confirmed bookings</th><th>Recorded present</th><th>Booking utilisation</th><th>Actual attendance utilisation</th><th>Recorded outcomes</th><th>Unknown outcomes</th></tr></thead><tbody>{popularity.map(g => <tr key={g.number}><td>Group {g.number}</td><td>{g.confirmed}</td><td>{g.present}</td><td>{g.bookingUtilisation === undefined ? "No capacity" : `${g.bookingUtilisation}%`}</td><td>{g.attendanceUtilisation === undefined ? "Unknown / not recorded" : `${g.attendanceUtilisation}% (lower bound)`}</td><td>{g.attendanceRecorded}</td><td>{g.attendanceUnknown}</td></tr>)}</tbody></table></div>
-      <p className="hint">Booking utilisation is confirmed bookings ÷ capacity across published and archived weeks. Actual attendance utilisation is recorded present ÷ completed-week capacity: a lower bound when outcomes are unknown, never a claim that unknown runners were absent. With no recorded outcomes it is unknown, not 0%. Draft and cancelled weeks are excluded.</p>
+      <h3 className="subheading">Average recorded attendees by group</h3>
+      <p className="hint">Completed weeks with attendance recorded only; weeks with no attendance data are excluded.</p>
+      <div className="average-attendance-chart" aria-label="Average recorded attendees by group">
+        {popularity.map(group => <div className="average-attendance-row" key={group.number}>
+          <span>Group {group.number}</span>
+          <div className="average-attendance-track"><span style={{ width: `${maxAveragePresent ? (group.averagePresent ?? 0) / maxAveragePresent * 100 : 0}%` }} /></div>
+          <strong>{group.averagePresent === undefined ? "Unknown" : group.averagePresent.toFixed(1)}</strong>
+        </div>)}
+      </div>
+      <div className="table-wrap"><table><caption>Group popularity: average attendance and waitlist</caption><thead><tr><th>Group</th><th>Avg. recorded attendees</th><th>Avg. waitlist</th><th>Different leaders</th><th>Confirmed bookings</th><th>Recorded present</th></tr></thead><tbody>{popularity.map(g => <tr key={g.number}><td>Group {g.number}</td><td>{g.averagePresent === undefined ? "Unknown" : g.averagePresent.toFixed(1)}</td><td>{g.averageWaitlisted === undefined ? "Unknown" : g.averageWaitlisted.toFixed(1)}</td><td>{g.leaderCount}</td><td>{g.confirmed}</td><td>{g.present}</td></tr>)}</tbody></table></div>
       <h3 className="subheading">Recorded waitlist flow</h3>
       <div className="stats"><div className="stat"><span>Waitlist joins</span><strong>{queueMetrics.joins}</strong></div><div className="stat"><span>Promotions / joins</span><strong>{queueMetrics.promotions} / {queueMetrics.joins}</strong><span>{queueMetrics.promotionRate === undefined ? "No recorded joins" : `${queueMetrics.promotionRate}% promoted`}</span></div><div className="stat"><span>Peak recorded group queue</span><strong>{queueMetrics.peakQueue ?? "Unknown"}</strong><span>{queueMetrics.withdrawals} recorded withdrawals</span></div></div>
       <p className="hint">Recorded published/archived-week events only; draft and cancelled weeks are excluded. Promotion rate = promotions ÷ waitlist joins (not confirmed bookings). Peak is the maximum recorded individual-group queue, not an aggregate of all queues or today’s queue; unavailable history is never inferred.</p>

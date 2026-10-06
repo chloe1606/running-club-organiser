@@ -339,6 +339,37 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ operation: "switchGroup", groupId: "g2" })).toMatchObject({ ok: false, code: "ASSIGNMENT_EXISTS" });
     expect(app.state()).toEqual(initial);
   });
+  it("lets an assigned leader cancel for low interest and cancels the group's bookings", () => {
+    const initial = fixture();
+    initial.groups[0].leaderId = "leader";
+    initial.groups[0].capacity = 3;
+    initial.bookings.push(booking("confirmed", "one"), booking("queued", "two", "g1", "waitlisted"));
+    const app = harness(initial);
+    expect(app.post({
+      operation: "cancelGroup", email: "leader@example.org", requestId: requestId(30),
+      runId: "run", runVersion: 1, groupId: "g1", groupVersion: 1, reason: "low-interest",
+    })).toMatchObject({ ok: true, data: { status: "cancelled", reason: "low-interest" } });
+    expect(app.state().groups.find((group) => group.id === "g1")).toMatchObject({ cancelled: true, cancellationReason: "low-interest" });
+    expect(app.state().bookings.filter((entry) => entry.groupId === "g1").every((entry) => entry.status === "cancelled")).toBe(true);
+    expect(app.mutate({ requestId: requestId(31), runVersion: 2, groupVersion: 2, groupId: "g1" })).toMatchObject({ ok: false, code: "GROUP_CANCELLED" });
+  });
+  it("lets admins mark an unled group not held and rejects the action for a led group", () => {
+    const app = harness(fixture());
+    expect(app.post({
+      operation: "cancelGroup", email: "admin@example.org", requestId: requestId(32),
+      runId: "run", runVersion: 1, groupId: "g1", groupVersion: 1, reason: "no-leader",
+    })).toMatchObject({ ok: true, data: { status: "cancelled", reason: "no-leader" } });
+    const led = fixture();
+    led.groups[0].leaderId = "leader";
+    expect(harness(led).post({
+      operation: "cancelGroup", email: "admin@example.org", requestId: requestId(33),
+      runId: "run", runVersion: 1, groupId: "g1", groupVersion: 1, reason: "no-leader",
+    })).toMatchObject({ ok: false, code: "INVALID_GROUP_STATUS" });
+    expect(harness(fixture()).post({
+      operation: "cancelGroup", email: "one@example.org", requestId: requestId(34),
+      runId: "run", runVersion: 1, groupId: "g1", groupVersion: 1, reason: "low-interest",
+    })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+  });
   it("books a runner as sweeper atomically and clears the volunteer role when they leave", () => {
     const initial = fixture();
     initial.members.find((member) => member.id === "one")!.roles.push("sweeper");
@@ -385,6 +416,15 @@ describe("Apps Script locked gateway", () => {
     const full = fixture();
     full.bookings.push(booking("existing", "one"));
     expect(harness(full).mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "leader" })).toMatchObject({ ok: false, code: "GROUP_FULL" });
+  });
+  it("clears an assigned leader when None is selected", () => {
+    const initial = fixture();
+    initial.groups[0].leaderId = "leader";
+    initial.bookings.push({ ...booking("lead", "leader"), source: "assignment" });
+    const app = harness(initial);
+    expect(app.mutate({ operation: "assignLeader", email: "admin@example.org", memberId: "", requestId: requestId(2) })).toMatchObject({ ok: true });
+    expect(app.state().groups[0].leaderId).toBeUndefined();
+    expect(app.state().bookings.find((entry) => entry.id === "lead")?.status).toBe("cancelled");
   });
   it("rejects role escalation, wrong-group leader changes and ineligible assignments", () => {
     const initial = fixture();
