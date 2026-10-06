@@ -83,6 +83,8 @@ export function isAuthSessionConfigured() {
   return Boolean(process.env.NEXTAUTH_SECRET && siteUrl());
 }
 
+let lastGoogleConfigurationWarning = "";
+
 export function getAuthAvailability() {
   let smtp = false;
   try {
@@ -96,8 +98,21 @@ export function getAuthAvailability() {
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.APPS_SCRIPT_GATEWAY_URL &&
     process.env.APPS_SCRIPT_GATEWAY_SECRET,
   );
+  const google = common && Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+  const missing = google ? [] : [
+    "NEXTAUTH_URL", "NEXTAUTH_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_SHEET_ID", "GOOGLE_SERVICE_ACCOUNT_JSON", "APPS_SCRIPT_GATEWAY_URL",
+    "APPS_SCRIPT_GATEWAY_SECRET",
+  ].filter((name) => !process.env[name]);
+  const issues = missing.length ? [`missing or empty: ${missing.join(", ")}`] : [];
+  if (process.env.NEXTAUTH_URL && !siteUrl()) {
+    issues.push("NEXTAUTH_URL must be an absolute HTTP(S) URL without credentials and use HTTPS in production");
+  }
+  const warning = issues.length ? `Google sign-in is not configured (${issues.join("; ")}).` : "";
+  if (warning && warning !== lastGoogleConfigurationWarning) console.warn(warning);
+  lastGoogleConfigurationWarning = warning;
   return {
-    google: common && Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+    google,
     email: common && smtp && Boolean(process.env.EMAIL_FROM),
   };
 }
