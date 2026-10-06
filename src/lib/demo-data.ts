@@ -1,6 +1,7 @@
 import type { PlatformSnapshot } from "./platform-types";
 import type { Run } from "./domain";
 import { BOOKING_CUTOFF, clubDateTime, nextTuesdayDate, GROUP_CAPACITY } from "./schedule";
+import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "./locations";
 
 export const demoPersonas = {
   runner: "demo-runner",
@@ -22,7 +23,7 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
   ];
   const snapshot: PlatformSnapshot = {
     weeks: [], groups: [], bookings: [], members, attendance: [], audit: [],
-    config: { location: "Riverside Pavilion, Meadow Lane", startTime: "19:00", timeZone: "Europe/London", demoConfiguration: true },
+    config: { location: "Riverside Pavilion, Meadow Lane", locations: [...DEFAULT_LOCATIONS, "Riverside Pavilion, Meadow Lane"], locationMaps: { ...DEFAULT_LOCATION_MAPS }, startTime: "19:00", timeZone: "Europe/London", demoConfiguration: true },
     demo: true, currentMemberId: demoPersonas.runner,
   };
   const leaders = [demoPersonas.leader, demoPersonas.admin, ...members.slice(3, 14).map(m => m.id)];

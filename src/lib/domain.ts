@@ -8,6 +8,8 @@ export interface Versioned {
 
 export interface Run extends Versioned {
   id: string;
+  location?: string;
+  mapsUrl?: string;
   startsAt: string;
   bookingOpensAt: string;
   bookingClosesAt: string;

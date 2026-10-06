@@ -178,6 +178,35 @@ function harness(snapshot?: PlatformSnapshot) {
 }
 
 describe("Apps Script locked gateway", () => {
+  it("seeds default venues and lets admins remove an unused venue", () => {
+    const app = harness(fixture());
+    const initial = app.post({ operation: "snapshot" });
+    expect(initial.data?.config.locations).toEqual(["Willett Recreation Ground", "Norman Park (Track Side)"]);
+    expect(initial.data?.config.locationMaps).toMatchObject({
+      "Willett Recreation Ground": expect.stringContaining("google.com/maps/place/Willett+Recreation+Ground"),
+      "Norman Park (Track Side)": expect.stringContaining("google.com/maps/place/Norman+Park"),
+    });
+    const blocked = harness({ ...fixture(), config: {
+      ...fixture().config, locations: ["Willett Recreation Ground", "Norman Park (Track Side)"],
+    }, weeks: [{ ...fixture().weeks[0], status: "draft", startsAt: "2026-08-18T19:00:00Z", location: "Willett Recreation Ground" }] });
+    expect(blocked.post({
+      operation: "updateLocations", email: "admin@example.org", requestId: requestId(19),
+      location: "Norman Park (Track Side)", locations: ["Norman Park (Track Side)"],
+    })).toMatchObject({ ok: false, code: "LOCATION_IN_USE" });
+    expect(app.post({
+      operation: "updateLocations", email: "admin@example.org", requestId: requestId(20),
+      location: "Norman Park (Track Side)", locations: ["Norman Park (Track Side)"],
+      locationMaps: { "Norman Park (Track Side)": "https://www.google.com/maps/place/Norman+Park/" },
+    })).toMatchObject({ ok: true, data: { location: "Norman Park (Track Side)" } });
+    expect(app.state().config).toMatchObject({
+      location: "Norman Park (Track Side)", locations: ["Norman Park (Track Side)"],
+    });
+    expect(app.state().config.locationMaps).not.toHaveProperty("Willett Recreation Ground");
+    expect(app.post({
+      operation: "updateLocations", email: "one@example.org", requestId: requestId(21),
+      location: "Norman Park (Track Side)", locations: ["Norman Park (Track Side)"],
+    })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+  });
   it("fails closed without a configured shared secret and never accepts browser-only identities", () => {
     const app = harness(fixture());
     app.configureSecret(null);
@@ -400,7 +429,7 @@ describe("Apps Script locked gateway", () => {
     expect(week.bookingClosesAt).toBe("2026-10-27T18:30:00.000Z");
     const groups = state.groups.filter((entry) => entry.runId === week.id);
     expect(groups).toHaveLength(13);
-    expect(groups[0]).toMatchObject({ routeDescription: "Copied route", routeNeedsReview: true });
+    expect(groups[0]).toMatchObject({ routeDescription: "Copied route", routeNeedsReview: false });
     expect(groups.every((entry) => !entry.leaderId && !entry.sweeperId)).toBe(true);
     expect(state.bookings).toHaveLength(1);
     expect(app.mutate({ operation: "createWeek", email: "admin@example.org", date: "2026-10-28", requestId: requestId(2) })).toMatchObject({ ok: false, code: "INVALID_DATE" });
@@ -674,7 +703,7 @@ describe("Apps Script manual migration", () => {
     const group = app.state().groups.find((entry) => entry.runId === "run-2026-08-18" && entry.number === 1)!;
     expect(group).toMatchObject({
       id: "run-2026-08-18-definition-group-1", distanceLabel: "1 km", paceLabel: "4:00 min/km",
-      capacity: 19, routeDescription: "Last week's route", routeNeedsReview: true,
+      capacity: 19, routeDescription: "Last week's route", routeNeedsReview: false,
     });
     expect(master.cells).toHaveLength(14);
     expect(master.cells[0]).toEqual(["Group", "Distance", "Pace", "Capacity", "Group ID"]);
@@ -712,7 +741,7 @@ describe("Apps Script manual migration", () => {
     expect(app.mutate({ operation: "createWeek", email: "admin@example.org", date: "2026-08-18", copyFromRunId: "run" }).ok).toBe(true);
     expect(app.state().groups.filter((group) => group.runId === "run-2026-08-18")).toHaveLength(20);
     expect(app.state().groups.find((group) => group.runId === "run-2026-08-18" && group.id.endsWith("definition-group-2"))).toMatchObject({
-      number: 1.5, routeDescription: "Route for decimal group", routeNeedsReview: true,
+      number: 1.5, routeDescription: "Route for decimal group", routeNeedsReview: false,
     });
     expect(app.state().groups.filter((group) => group.runId === "run-2026-08-18").every((group) => group.capacity === 20)).toBe(true);
   });

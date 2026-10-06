@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
 import type { ClubMember, PlatformSnapshot } from "@/lib/platform-types";
@@ -10,6 +10,8 @@ import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weekl
 import { BookingGroups } from "./booking-groups";
 import { CancelRun } from "./cancel-run";
 import { SignIn, SignOut } from "./auth-controls";
+import { ClubBrand } from "./club-brand";
+import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "@/lib/locations";
 
 export type Mutate = (operation: string, payload: Record<string, unknown>) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
@@ -19,9 +21,17 @@ export function memberName(snapshot: PlatformSnapshot, id?: string) {
   return snapshot.members.find(m => m.id === id)?.name ?? (id ? "Club member" : "To be assigned");
 }
 
+function mapsUrl(location: string, savedUrl?: string) {
+  if (savedUrl) return savedUrl;
+  return DEFAULT_LOCATION_MAPS[location] ?? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
+}
+
 export function ClubDashboard({ initial, view = "runs", groupId }: {
   initial: PlatformSnapshot; view?: "runs" | "leader" | "admin" | "profile" | "detail"; groupId?: string;
 }) {
+  useEffect(() => {
+    document.querySelectorAll<HTMLDetailsElement>(".admin-disclosure").forEach(disclosure => { disclosure.open = false; });
+  }, []);
   const router = useRouter();
   const [snapshot, setSnapshot] = useState(initial);
   const sortedWeeks = [...snapshot.weeks].sort((a, b) => b.startsAt.localeCompare(a.startsAt));
@@ -39,6 +49,7 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
   const admin = current?.roles.includes("admin");
   const leader = current?.roles.includes("leader");
   const run = snapshot.weeks.find(r => r.id === selectedId);
+  const meetingLocation = run?.location ?? snapshot.config.location;
   const mutate: Mutate = async (operation, payload) => {
     if (pending) return;
     const intent = JSON.stringify([operation, Object.keys(payload).filter(key => !key.endsWith("Version")).sort().map(key => [key, payload[key]])]);
@@ -87,7 +98,7 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
   const groups = snapshot.groups.filter(g => g.runId === run?.id).sort((a, b) => a.number - b.number);
   return <main>
     <nav className="club-nav" aria-label="Club navigation">
-      <Link className="brand" href="/">TUESDAY<span> / RUN CLUB</span></Link>
+      <ClubBrand />
       <div className="nav-links">
         <Link href="/">Runs</Link>
         {snapshot.currentMemberId && <Link href="/profile">My running</Link>}
@@ -107,7 +118,7 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
       <p className="eyebrow">{view === "runs" ? "A little pace. A lot of community." : view === "profile" ? current?.name ?? "Member profile" : `${view} workspace`}</p>
       <h1>{headings[view]}</h1>
       <p className="intro">Tuesday evenings. Shared miles. A group for every pace.</p>
-      <div className="meeting"><span aria-hidden="true">↗</span><span>{snapshot.config.location || "Meeting point to be confirmed"}<br /><strong>{snapshot.config.startTime} · {snapshot.config.timeZone}</strong></span></div>
+      <div className="meeting"><span className="meeting-pin" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z" stroke="currentColor" strokeWidth="1.8"/><circle cx="12" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.8"/></svg></span><span><a className="meeting-place" href={mapsUrl(meetingLocation, run?.mapsUrl ?? snapshot.config.locationMaps?.[meetingLocation])} target="_blank" rel="noreferrer">{meetingLocation || "Meeting point to be confirmed"} <span className="meeting-map-hint">Open in Google Maps</span></a><br /><strong>{snapshot.config.startTime} · {snapshot.config.timeZone}</strong></span></div>
     </header>
     {message && <p className={failure ? "notice error" : "notice"} role={failure ? "alert" : "status"}>{message}</p>}
     {retry && <p><button disabled={pending} className="secondary" onClick={() => void mutate(retry.operation, retry.payload)}>Retry last save safely</button></p>}
@@ -134,7 +145,7 @@ export function ClubDashboard({ initial, view = "runs", groupId }: {
         </section>}
         {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} />}
       </>}
-    <footer className="site-footer"><strong>Better together.</strong><span>Tuesday Club Runs · Please arrive ready to run.</span></footer>
+    <footer className="site-footer"><strong>Better together.</strong><span>Petts Wood Runners Tuesday Club Runs</span></footer>
   </main>;
 }
 
@@ -146,7 +157,6 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
     <p>{group.paceLabel} · {group.distanceLabel ?? "Distance to be confirmed"}</p>
     <p><strong>Leader:</strong> {memberName(snapshot, group.leaderId)} · <strong>Sweeper:</strong> {memberName(snapshot, group.sweeperId)}</p>
     <h3>Route</h3><p className="route">{group.routeDescription || "Route not yet provided."}</p>
-    {group.routeNeedsReview && <p className="badge amber">Route needs leader review</p>}
     <h3>Confirmed runners · {confirmed.length}/{group.capacity}</h3>
     <ul className="roster">{confirmed.map(b => <li key={b.id}>{memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
     <h3>Waitlist · {queue.length}</h3>
@@ -183,12 +193,10 @@ function LeaderGroup({ snapshot, run, group, mutate, pending }: { snapshot: Plat
 
 function RouteEditor({ run, group, mutate, pending }: { run: Run; group: Group; mutate: Mutate; pending: boolean }) {
   const [route, setRoute] = useState(group.routeDescription ?? "");
-  const [reviewed, setReviewed] = useState(!group.routeNeedsReview);
   return <form onSubmit={e => { e.preventDefault(); void mutate("updateRoute", { runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, routeDescription: route }); }}>
-    <label htmlFor={`route-${group.id}`}>Group {group.number} route {group.routeNeedsReview && "· review required"}</label>
+    <label htmlFor={`route-${group.id}`}>Group {group.number} route</label>
     <textarea id={`route-${group.id}`} required minLength={3} maxLength={4000} value={route} onChange={e => setRoute(e.target.value)} rows={3} />
-    {group.routeNeedsReview && <label className="check"><input type="checkbox" required checked={reviewed} onChange={e => setReviewed(e.target.checked)} />I reviewed this route for the selected week</label>}
-    <button disabled={pending || !reviewed || ["cancelled", "archived"].includes(run.status) || new Date(run.startsAt) <= new Date()}>Save reviewed route</button>
+    <button disabled={pending || ["cancelled", "archived"].includes(run.status) || new Date(run.startsAt) <= new Date()}>Save route</button>
   </form>;
 }
 
@@ -211,48 +219,106 @@ function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
 }
 
 function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformSnapshot; run?: Run; groups: Group[]; mutate: Mutate; pending: boolean }) {
+  const configuredLocations = snapshot.config.locations?.length ? snapshot.config.locations : DEFAULT_LOCATIONS;
+  const locationOptions = [...new Set([...configuredLocations, ...(snapshot.config.location && !/\bDEMO\b/i.test(snapshot.config.location) ? [snapshot.config.location] : [])])]
+    .filter(location => location.trim().toLowerCase() !== "willett rec");
   const [date, setDate] = useState("");
   const [copy, setCopy] = useState("");
+  const [newWeekLocation, setNewWeekLocation] = useState(snapshot.config.location && locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "");
   const [moveMember, setMoveMember] = useState("");
   const [moveGroup, setMoveGroup] = useState("");
   const [search, setSearch] = useState("");
+  const [newLocation, setNewLocation] = useState("");
+  const [newLocationMapsUrl, setNewLocationMapsUrl] = useState("");
+  const initialVenueSelection = locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "";
+  const [venueSelection, setVenueSelection] = useState(initialVenueSelection);
+  const [venueMapsUrl, setVenueMapsUrl] = useState(snapshot.config.locationMaps?.[initialVenueSelection] ?? "");
   const totals = weeklyAnalytics(snapshot);
   const popularity = groupAnalytics(snapshot);
   const queueMetrics = waitlistAnalytics(snapshot);
-  const reviewCount = groups.filter(g => g.routeNeedsReview).length;
   const history = totals.filter(w => new Date(w.run.startsAt) <= new Date()).slice(-12);
   const totalPresent = history.reduce((n, w) => n + w.present, 0);
   const totalAbsent = history.reduce((n, w) => n + w.absent, 0);
   const totalUnknown = history.reduce((n, w) => n + w.unknown, 0);
-  function create(e: FormEvent) { e.preventDefault(); void mutate("createWeek", { date, ...(copy ? { copyFromRunId: copy } : {}) }); }
-  return <div className="stack">
+  function create(e: FormEvent) { e.preventDefault(); void mutate("createWeek", { date, location: newWeekLocation, ...(copy ? { copyFromRunId: copy } : {}) }); }
+  function addLocation(e: FormEvent) {
+    e.preventDefault();
+    const value = newLocation.trim();
+    if (!value) return;
+    const existing = locationOptions.find(location => location.toLowerCase() === value.toLowerCase());
+    const locations = existing ? locationOptions : [...locationOptions, value];
+    const location = existing ?? value;
+    const locationMaps = { ...DEFAULT_LOCATION_MAPS, ...Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locationOptions.includes(venue))) };
+    if (newLocationMapsUrl.trim()) locationMaps[location] = newLocationMapsUrl.trim();
+    void mutate("updateLocations", { location, locations, locationMaps });
+    setVenueSelection(location);
+    setVenueMapsUrl(locationMaps[location] ?? "");
+    setNewWeekLocation(location);
+    setNewLocation("");
+    setNewLocationMapsUrl("");
+  }
+  function saveVenueMap(e: FormEvent) {
+    e.preventDefault();
+    const locationMaps = { ...DEFAULT_LOCATION_MAPS, ...Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locationOptions.includes(venue))) };
+    if (venueMapsUrl.trim()) locationMaps[venueSelection] = venueMapsUrl.trim();
+    else delete locationMaps[venueSelection];
+    void mutate("updateLocations", { location: snapshot.config.location, locations: locationOptions, locationMaps });
+  }
+  function removeLocation(locationToRemove: string) {
+    if (locationOptions.length < 2) return;
+    const locations = locationOptions.filter(location => location !== locationToRemove);
+    const location = snapshot.config.location === locationToRemove ? locations[0] : snapshot.config.location;
+    const locationMaps = Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locations.includes(venue)));
+    void mutate("updateLocations", { location, locations, locationMaps });
+    if (venueSelection === locationToRemove) {
+      setVenueSelection(location);
+      setVenueMapsUrl(locationMaps[location] ?? DEFAULT_LOCATION_MAPS[location] ?? "");
+    }
+    if (newWeekLocation === locationToRemove) setNewWeekLocation(location);
+  }
+  return <div className="stack admin-dashboard">
     <section className="panel"><h2>Week lifecycle</h2><form className="inline-form" onSubmit={create}>
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
+      <label>Location for new week<select required value={newWeekLocation} disabled={!locationOptions.length} onChange={e => setNewWeekLocation(e.target.value)}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
       <label>Copy scaffold<select value={copy} onChange={e => setCopy(e.target.value)}><option value="">Configured group defaults</option>{snapshot.weeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt)}</option>)}</select></label>
-      <button disabled={pending}>Create draft week</button>
-    </form><p className="hint">Copied routes need review. No runners or volunteer assignments are copied.</p>
+      <button disabled={pending || !locationOptions.length}>Create draft week</button>
+    </form>{!locationOptions.length ? <p className="notice">No venues are available. Add a location in the Venue list below before creating a week.</p> : <p className="hint">No runners or volunteer assignments are copied.</p>}
       {run && <><div className="actions">
-        <button disabled={pending || run.status !== "draft" || reviewCount > 0} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
+        <button disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
         <button className="secondary" disabled={pending || run.status !== "published" || new Date(run.startsAt) > new Date()} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</button>
       </div>{["published", "draft"].includes(run.status) && new Date(run.startsAt) > new Date() && <CancelRun runId={run.id} runVersion={run.version} mutate={mutate} pending={pending} />}</>}
-      {run && ["draft", "published"].includes(run.status) && <details className="route-review"><summary>Review weekly routes · {reviewCount} need review</summary><p className="hint">Copied routes must be reviewed and saved before publication. Confirm each route is appropriate for this week.</p><div className="stack">{groups.map(g => <RouteEditor key={`${g.id}:${g.version}`} run={run} group={g} mutate={mutate} pending={pending} />)}</div></details>}
       <p className="hint">Cancelled weeks remain cancelled permanently so the cancellation reason and history are preserved.</p>
     </section>
-    {run && <section className="panel"><h2>Volunteers & runner moves</h2><p className="hint">One group per runner per week. Assigned volunteers occupy confirmed places.</p>
+    {run && ["draft", "published"].includes(run.status) && new Date(run.startsAt) > new Date() && <section className="panel week-location-panel">
+      <details className="admin-disclosure" suppressHydrationWarning>
+        <summary>Change location for this week</summary>
+        <div className="disclosure-content">
+          <p className="hint">Changes only the venue for {dateLabel(run.startsAt, snapshot.config.timeZone)}.</p>
+          <label>Location for this week<select value={run.location && locationOptions.includes(run.location) ? run.location : locationOptions.includes(snapshot.config.location) ? snapshot.config.location : ""} disabled={pending || !locationOptions.length} onChange={event => void mutate("updateWeekLocation", { runId: run.id, runVersion: run.version, location: event.target.value })}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
+          {!locationOptions.length && <p className="hint">Add a venue in the Venue list below to set this week’s location.</p>}
+        </div>
+      </details>
+    </section>}
+    {run && <section className="panel"><h2>Volunteers</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
       <div className="assignment-grid">{groups.map(g => <label key={g.id}>Group {g.number} · {confirmedCount(g.id, snapshot.bookings)}/{g.capacity}
         <select value={g.leaderId ?? ""} disabled={pending || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= new Date()} onChange={e => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId: e.target.value })}>
           <option value="" disabled>Assign leader</option>{snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select></label>)}</div>
-      <form className="inline-form" onSubmit={e => {
+    </section>}
+    {run && <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
+      <summary>Runner moves</summary>
+      <div className="disclosure-content"><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === moveGroup);
         if (destination) void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember });
       }}>
         <label>Runner<select required value={moveMember} onChange={e => setMoveMember(e.target.value)}><option value="">Select runner</option>{snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && b.source !== "assignment").map(b => <option key={b.id} value={b.memberId}>{memberName(snapshot, b.memberId)}</option>)}</select></label>
         <label>Destination<select required value={moveGroup} onChange={e => setMoveGroup(e.target.value)}><option value="">Select group</option>{groups.map(g => <option key={g.id} value={g.id}>Group {g.number} · {g.paceLabel}</option>)}</select></label>
         <button disabled={pending || !bookingIsOpen(run, new Date())}>Move runner</button>
-      </form><p className="hint">Moving to a full group joins its queue. The runner’s previous place is released atomically.</p>
-    </section>}
-    <section className="panel"><h2>Attendance, not assumptions.</h2><p>Last 12 historical weeks. Attendance rates exclude unknown outcomes; bookings are never counted as attendance.</p>
+      </form></div>
+    </details></section>}
+    <section className="panel attendance-panel"><details className="admin-disclosure" suppressHydrationWarning>
+      <summary>Attendance, not assumptions</summary>
+      <div className="disclosure-content"><p>Last 12 historical weeks. Attendance rates exclude unknown outcomes; bookings are never counted as attendance.</p>
       <div className="stats"><div className="stat"><span>Recorded present</span><strong>{totalPresent}</strong></div><div className="stat"><span>Recorded absent</span><strong>{totalAbsent}</strong></div><div className="stat"><span>Unrecorded / unknown</span><strong>{totalUnknown}</strong></div></div>
       <div className="chart" role="img" aria-label="Historical attendance utilisation by week. Each full bar represents available capacity, not bookings; exact values in the table below.">{history.map(w => <div className="chart-row" key={w.run.id}><span>{dateLabel(w.run.startsAt).split(" ").slice(0, 3).join(" ")}</span><div className="chart-track"><span className="chart-present" style={{ width: `${w.capacity ? w.present / w.capacity * 100 : 0}%` }} /><span className="chart-absent" style={{ width: `${w.capacity ? w.absent / w.capacity * 100 : 0}%` }} /><span className="chart-unknown" style={{ width: `${w.capacity ? w.unknown / w.capacity * 100 : 0}%` }} /></div></div>)}</div>
       <p className="legend"><span>● Present</span><span>● Absent</span><span>● Unknown</span></p>
@@ -270,11 +336,42 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
       <h3 className="subheading">Recorded waitlist flow</h3>
       <div className="stats"><div className="stat"><span>Waitlist joins</span><strong>{queueMetrics.joins}</strong></div><div className="stat"><span>Promotions / joins</span><strong>{queueMetrics.promotions} / {queueMetrics.joins}</strong><span>{queueMetrics.promotionRate === undefined ? "No recorded joins" : `${queueMetrics.promotionRate}% promoted`}</span></div><div className="stat"><span>Peak recorded group queue</span><strong>{queueMetrics.peakQueue ?? "Unknown"}</strong><span>{queueMetrics.withdrawals} recorded withdrawals</span></div></div>
       <p className="hint">Recorded published/archived-week events only; draft and cancelled weeks are excluded. Promotion rate = promotions ÷ waitlist joins (not confirmed bookings). Peak is the maximum recorded individual-group queue, not an aggregate of all queues or today’s queue; unavailable history is never inferred.</p>
+      </div>
+    </details></section>
+    <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
+      <summary>Club members</summary>
+      <div className="disclosure-content"><label>Search members<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Name or email" /></label>
+        <div className="member-list">{snapshot.members.filter(m => `${m.name} ${m.email}`.toLowerCase().includes(search.toLowerCase())).map(m => <MemberEditor key={`${m.id}:${m.version}`} member={m} mutate={mutate} pending={pending} />)}</div>
+      </div>
+    </details>
     </section>
-    <section className="panel"><h2>Club members</h2><label>Search members<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Name or email" /></label>
-      <div className="member-list">{snapshot.members.filter(m => `${m.name} ${m.email}`.toLowerCase().includes(search.toLowerCase())).map(m => <MemberEditor key={`${m.id}:${m.version}`} member={m} mutate={mutate} pending={pending} />)}</div>
+    <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
+      <summary>Audit trail</summary>
+      <div className="disclosure-content"><p>Accountable actions, newest first.</p><ul className="audit">{snapshot.audit.slice(0, 100).map(a => <li key={a.id}><strong>{a.action}</strong> · {memberName(snapshot, a.actorId)} · {new Date(a.at).toLocaleString("en-GB", { timeZone: snapshot.config.timeZone })}<br /><small>Request {a.requestId}</small></li>)}</ul>{!snapshot.audit.length && <p>No recorded changes yet.</p>}</div>
+    </details></section>
+    <section className="panel location-settings"><details className="admin-disclosure" suppressHydrationWarning>
+      <summary>Venue list</summary>
+      <div className="disclosure-content"><p className="hint">Choose the default venue for new weeks and maintain a Maps link for each saved location.</p>
+      <form className="venue-editor" onSubmit={saveVenueMap}>
+        <label htmlFor="club-location">Default location<select id="club-location" value={locationOptions.includes(snapshot.config.location) ? snapshot.config.location : ""} disabled={pending || !locationOptions.length} onChange={event => void mutate("updateLocations", { location: event.target.value, locations: locationOptions, locationMaps: Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locationOptions.includes(venue))) })}>
+          {!locationOptions.includes(snapshot.config.location) && <option value="">Choose a saved location</option>}
+          {locationOptions.map(location => <option key={location} value={location}>{location}</option>)}
+        </select></label>
+        <label htmlFor="venue-map-select">Edit Maps link for<select id="venue-map-select" value={venueSelection} disabled={pending || !locationOptions.length} onChange={event => { setVenueSelection(event.target.value); setVenueMapsUrl(snapshot.config.locationMaps?.[event.target.value] ?? ""); }}>{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
+        <label htmlFor="venue-map-url">Google Maps link<input id="venue-map-url" type="url" value={venueMapsUrl} onChange={event => setVenueMapsUrl(event.target.value)} placeholder="https://www.google.com/maps/..." /></label>
+        <button className="secondary" disabled={pending || !locationOptions.length}>Save Maps link</button>
+      </form>
+      <form className="venue-add-form" onSubmit={addLocation}>
+        <label htmlFor="new-location">Add location<input id="new-location" value={newLocation} maxLength={120} onChange={event => setNewLocation(event.target.value)} placeholder="Venue name or address" /></label>
+        <label htmlFor="new-location-map">Google Maps link<input id="new-location-map" type="url" value={newLocationMapsUrl} onChange={event => setNewLocationMapsUrl(event.target.value)} placeholder="https://www.google.com/maps/..." /></label>
+        <button disabled={pending || !newLocation.trim()}>Add location</button>
+      </form>
+      <ul className="venue-list" aria-label="Saved venues">{locationOptions.map(location => <li key={location}>
+        <span>{location}</span><button type="button" className="secondary" disabled={pending || locationOptions.length < 2} onClick={() => removeLocation(location)}>Remove</button>
+      </li>)}</ul>
+      </div>
+    </details>
     </section>
-    <section className="panel"><h2>Audit trail</h2><p>Accountable actions, newest first.</p><ul className="audit">{snapshot.audit.slice(0, 100).map(a => <li key={a.id}><strong>{a.action}</strong> · {memberName(snapshot, a.actorId)} · {new Date(a.at).toLocaleString("en-GB", { timeZone: snapshot.config.timeZone })}<br /><small>Request {a.requestId}</small></li>)}</ul>{!snapshot.audit.length && <p>No recorded changes yet.</p>}</section>
   </div>;
 }
 

@@ -45,6 +45,14 @@ const PLATFORM_CONFIG = {
   demoConfiguration: true,
 };
 const PLATFORM_BOOKING_CUTOFF = "18:30";
+const DEFAULT_CLUB_LOCATIONS = [
+  "Willett Recreation Ground",
+  "Norman Park (Track Side)",
+];
+const DEFAULT_CLUB_LOCATION_MAPS = {
+  "Willett Recreation Ground": "https://www.google.com/maps/place/Willett+Recreation+Ground/@51.3928404,0.0731925,581m/data=!3m2!1e3!4b1!4m6!3m5!1s0x47d8ab9c1fc4d937:0x36b9ea1a882bd93c!8m2!3d51.3928405!4d0.0780634!16s%2Fg%2F1jkvjm9kp?entry=ttu&g_ep=EgoyMDI2MDkzMC4wIKXMDSoASAFQAw%3D%3D",
+  "Norman Park (Track Side)": "https://www.google.com/maps/place/Norman+Park+(Hayes)+Recycling+Site/@51.3875908,0.0159645,581m/data=!3m1!1e3!4m9!1m2!2m1!1snorman+park!3m5!1s0x47d8aa8a1fd2fbf5:0x8b2404213a74d0a9!8m2!3d51.3875917!4d0.0207297!16s%2Fg%2F1jkvlxf_p?entry=ttu&g_ep=EgoyMDI2MDkzMC4wIKXMDSoASAFQAw%3D%3D",
+};
 const PLATFORM_STATE_SHEET = "_PlatformState";
 const PLATFORM_CHUNK_SIZE = 39995;
 const PLATFORM_CHUNK_PREFIX = "data:";
@@ -81,6 +89,20 @@ function loadPlatformState_() {
   if (state.revision === undefined) state.revision = 0;
   if (!Number.isInteger(state.revision) || state.revision < 0) fail_("STATE_CORRUPT", "Invalid canonical revision.");
   if (!state.groupDefinitions) state.groupDefinitions = defaultGroupDefinitions_();
+  const hasSavedLocations = Array.isArray(state.snapshot.config.locations) && state.snapshot.config.locations.length > 0;
+  const savedLocations = hasSavedLocations
+    ? state.snapshot.config.locations
+    : DEFAULT_CLUB_LOCATIONS.slice();
+  state.snapshot.config.locations = clubLocationOptions_(Object.assign({}, state.snapshot.config, { locations: savedLocations }));
+  if (String(state.snapshot.config.location || "").trim().toLowerCase() === "willett rec") {
+    state.snapshot.config.location = "Willett Recreation Ground";
+  }
+  state.snapshot.config.locationMaps = hasSavedLocations
+    ? (state.snapshot.config.locationMaps || {})
+    : Object.assign({}, DEFAULT_CLUB_LOCATION_MAPS, state.snapshot.config.locationMaps || {});
+  Object.keys(state.snapshot.config.locationMaps).forEach((venue) => {
+    if (!state.snapshot.config.locations.includes(venue)) delete state.snapshot.config.locationMaps[venue];
+  });
   validateGroupDefinitions_(state.groupDefinitions);
   validatePlatform_(state.snapshot);
   return state;
@@ -210,6 +232,7 @@ function confirmClubConfiguration() {
     if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
     state.groupDefinitions = definitions;
     state.snapshot.config = Object.assign({}, PLATFORM_CONFIG, { demoConfiguration: false });
+    state.snapshot.config.locations = clubLocationOptions_(state.snapshot.config);
     state.configuration = { backupId: backup.getId(), at: new Date().toISOString(), actorId: admin.id };
     state.snapshot.audit.push({
       id: Utilities.getUuid(), runId: "", actorId: admin.id, action: "confirmClubConfiguration",
@@ -254,6 +277,7 @@ function configureClubPlatform() {
           startTime: normalizeClubTime_(settings["Start Time"]),
           demoConfiguration: String(settings["Demo Configuration"]).toUpperCase() !== "FALSE",
         };
+        config.locations = clubLocationOptions_(Object.assign({}, state.snapshot.config, config));
         validateConfirmedClubConfiguration_(config, definitions);
         const roster = records_("UserSetup").map((entry) => {
           const active = String(entry.Active).toUpperCase();
@@ -374,7 +398,18 @@ function normalizeClubTime_(value) {
 }
 
 function emptySnapshot_() {
-  return { weeks: [], groups: [], bookings: [], members: [], attendance: [], audit: [], config: Object.assign({}, PLATFORM_CONFIG), demo: false };
+  return { weeks: [], groups: [], bookings: [], members: [], attendance: [], audit: [], config: Object.assign({}, PLATFORM_CONFIG, { locations: DEFAULT_CLUB_LOCATIONS.slice(), locationMaps: Object.assign({}, DEFAULT_CLUB_LOCATION_MAPS) }), demo: false };
+}
+function clubLocationOptions_(config) {
+  const candidates = Array.isArray(config.locations) ? config.locations : [];
+  if (config.location && !/\bDEMO\b/i.test(config.location)) candidates.push(config.location);
+  const seen = new Set();
+  return candidates.map((location) => String(location || "").trim()).filter((location) => {
+    const key = location.toLowerCase();
+    if (!location || key === "willett rec" || location.length > 120 || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 30);
 }
 function legacySnapshot_() {
   const snapshot = emptySnapshot_();
@@ -445,6 +480,18 @@ function validatePlatform_(snapshot) {
         !Number.isInteger(entry.version) || entry.version < 1) fail_("INVALID_DATA", "Invalid or duplicate member details.");
     emails.add(entry.email);
   });
+  if (snapshot.config.locations !== undefined) {
+    if (!Array.isArray(snapshot.config.locations) || snapshot.config.locations.length > 30 ||
+        snapshot.config.locations.some((location) => typeof location !== "string" || !location.trim() || location.length > 120) ||
+        new Set(snapshot.config.locations.map((location) => location.trim().toLowerCase())).size !== snapshot.config.locations.length ||
+        (!/\bDEMO\b/i.test(snapshot.config.location) && snapshot.config.locations.length && !snapshot.config.locations.includes(snapshot.config.location))) fail_("INVALID_CONFIGURATION", "Configured locations must be unique and include the selected location.");
+  }
+  if (snapshot.config.locationMaps !== undefined) {
+    if (!snapshot.config.locationMaps || typeof snapshot.config.locationMaps !== "object" || Array.isArray(snapshot.config.locationMaps) ||
+        Object.keys(snapshot.config.locationMaps).some((location) => !snapshot.config.locations?.includes(location) || !validMapsUrl_(snapshot.config.locationMaps[location]))) {
+      fail_("INVALID_CONFIGURATION", "Each saved Google Maps link must be valid and belong to a saved venue.");
+    }
+  }
   snapshot.weeks.forEach((week) => {
     if (!["draft", "published", "cancelled", "archived"].includes(week.status) ||
         ![week.startsAt, week.bookingOpensAt, week.bookingClosesAt].every((value) => Number.isFinite(new Date(value).getTime())) ||
@@ -529,8 +576,8 @@ function projectPlatform_(state) {
     snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
   writeProjection_("UserSetup", ["Email", "Name", "Role", "User ID", "Active", "Version"],
     snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
-  writeProjection_("Weeks", ["Week ID", "Date", "Starts At", "Booking Opens At", "Booking Closes At", "Status", "Version", "Cancellation Reason", "Sheet"],
-    snapshot.weeks.map((entry) => [entry.id, clubLocalDate_(new Date(entry.startsAt), snapshot.config.timeZone), entry.startsAt, entry.bookingOpensAt, entry.bookingClosesAt, entry.status, entry.version, entry.cancellationReason || "", weeklySheetName_(entry.id)]));
+  writeProjection_("Weeks", ["Week ID", "Date", "Starts At", "Booking Opens At", "Booking Closes At", "Status", "Version", "Cancellation Reason", "Sheet", "Location", "Google Maps URL"],
+    snapshot.weeks.map((entry) => [entry.id, clubLocalDate_(new Date(entry.startsAt), snapshot.config.timeZone), entry.startsAt, entry.bookingOpensAt, entry.bookingClosesAt, entry.status, entry.version, entry.cancellationReason || "", weeklySheetName_(entry.id), entry.location || snapshot.config.location, entry.mapsUrl || ""]));
   writeProjection_("Groups", ["Group", "Distance", "Pace", "Capacity", "Group ID"],
     state.groupDefinitions.map((entry) => [entry.number, entry.distanceLabel, entry.paceLabel, entry.capacity, entry.id]));
   writeProjection_("GroupDefinitions", ["Group", "Distance", "Pace", "Capacity", "Group ID"],
@@ -538,6 +585,8 @@ function projectPlatform_(state) {
   writeProjection_("ClubConfiguration", ["Setting", "Value"], [
     ["Location", snapshot.config.location], ["Time Zone", snapshot.config.timeZone],
     ["Start Time", snapshot.config.startTime], ["Demo Configuration", snapshot.config.demoConfiguration],
+    ["Available Locations", JSON.stringify(clubLocationOptions_(snapshot.config))],
+    ["Location Maps", JSON.stringify(snapshot.config.locationMaps || {})],
   ]);
   snapshot.weeks.forEach((week) => {
     const bookings = snapshot.bookings.filter((entry) => entry.runId === week.id).map((entry) => {

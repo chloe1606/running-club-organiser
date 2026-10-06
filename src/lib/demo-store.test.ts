@@ -111,11 +111,33 @@ describe("isolated explicit demo", () => {
     const created = snapshot.weeks.find(w => w.id === "demo-run-2026-10-13")!;
     const groups = snapshot.groups.filter(g => g.runId === created.id);
     expect(groups).toHaveLength(13);
-    expect(groups.every(g => !g.leaderId && !g.sweeperId && g.routeNeedsReview)).toBe(true);
+    expect(groups.every(g => !g.leaderId && !g.sweeperId && !g.routeNeedsReview)).toBe(true);
     expect(snapshot.bookings.some(b => b.runId === created.id)).toBe(false);
     expect(() => mutateDemo("publishRun", { requestId: randomUUID(), runId: created.id, runVersion: created.version }, "admin")).toThrow("Another future");
     expect(getDemoSnapshot("admin").audit[0].action).toBe("createWeek");
     expect(() => mutateDemo("createWeek", { requestId: randomUUID(), date: "2026-10-14" }, "admin")).toThrow("Tuesday");
+  });
+  it("uses saved map links for new weeks and allows admins to change a future week's venue", async () => {
+    const { getDemoSnapshot, mutateDemo } = await setup();
+    const before = getDemoSnapshot("admin");
+    const mapsUrl = "https://www.google.com/maps/place/Oakfield+Pavilion/";
+    const locations = before.config.locations ?? [];
+    mutateDemo("updateLocations", {
+      requestId: randomUUID(), location: "Oakfield Pavilion", locations: [...locations, "Oakfield Pavilion"],
+      locationMaps: { "Oakfield Pavilion": mapsUrl },
+    }, "admin");
+    let snapshot = mutateDemo("createWeek", {
+      requestId: randomUUID(), date: "2026-10-13", location: "Oakfield Pavilion",
+    }, "admin");
+    let created = snapshot.weeks.find(week => week.id === "demo-run-2026-10-13")!;
+    const createdId = created.id;
+    expect(created).toMatchObject({ location: "Oakfield Pavilion", mapsUrl });
+    snapshot = mutateDemo("updateWeekLocation", {
+      requestId: randomUUID(), runId: createdId, runVersion: created.version, location: "Riverside Pavilion, Meadow Lane",
+    }, "admin");
+    created = snapshot.weeks.find(week => week.id === createdId)!;
+    expect(created.location).toBe("Riverside Pavilion, Meadow Lane");
+    expect(created.mapsUrl).toBeUndefined();
   });
   it("retains cancelled booking history and cancellation reason", async () => {
     const { mutateDemo, run, payload, getDemoSnapshot } = await setup();

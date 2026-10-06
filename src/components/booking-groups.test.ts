@@ -26,7 +26,7 @@ describe("runner group UI", () => {
     expect(html).toContain('class="availability green">7 places left');
     expect(html).toContain('class="availability amber">2 places left');
     expect(html).toContain('class="availability full">Full · waitlist');
-    expect(html).toContain("19/19 confirmed · 4 waiting");
+    expect(html).toContain("19/19 confirmed · Waitlist: 4");
     expect(html).toContain("Priya Shah");
     expect(html).toContain("Distance to be confirmed");
     expect(html).toContain("Join waitlist");
@@ -79,7 +79,7 @@ describe("runner group UI", () => {
     snapshot.bookings.filter(b => b.runId === run.id).forEach(b => { b.status = "cancelled"; });
     expect(groups.some(g => g.leaderId || g.sweeperId)).toBe(true);
     const html = render(snapshot);
-    expect(html.match(/0\/19 confirmed · 0 waiting/g)).toHaveLength(13);
+    expect(html.match(/0\/19 confirmed · Waitlist: 0/g)).toHaveLength(13);
     expect(html).not.toContain("1/19 confirmed");
   });
 });

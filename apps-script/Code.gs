@@ -64,7 +64,7 @@ function dispatch_(request) {
 function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   const operation = request.operation;
   const admin = actor.roles.includes("admin");
-  const adminOperations = ["createWeek", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner"];
+  const adminOperations = ["createWeek", "updateWeekLocation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner", "updateLocations"];
   if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
   let run;
   let group;
@@ -76,7 +76,14 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     if (snapshot.weeks.some((week) => clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) === request.date)) {
       fail_("WEEK_EXISTS", "A run already exists for this club-local date.");
     }
-    run = Object.assign({ id: "run-" + request.date, status: "draft", version: 1 }, schedule);
+    const locations = Array.isArray(snapshot.config.locations) ? snapshot.config.locations : [snapshot.config.location].filter((location) => location && !/\bDEMO\b/i.test(location));
+    const configuredLocation = snapshot.config.location;
+    const location = String(request.location || (locations.includes(configuredLocation) ? configuredLocation : locations[0]) ||
+      (snapshot.config.demoConfiguration ? configuredLocation : "")).trim();
+    if (!location || (!locations.includes(location) && !(snapshot.config.demoConfiguration && !locations.length))) fail_("INVALID_CONFIGURATION", "Choose a saved venue for this week.");
+    const locationMaps = snapshot.config.locationMaps || {};
+    run = Object.assign({ id: "run-" + request.date, status: "draft", version: 1, location,
+      ...(locationMaps[location] ? { mapsUrl: locationMaps[location] } : {}) }, schedule);
     let sourceGroups = [];
     if (request.copyFromRunId) {
       if (!snapshot.weeks.some((week) => week.id === request.copyFromRunId)) fail_("NOT_FOUND", "The source week does not exist.");
@@ -93,10 +100,34 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         paceLabel: definition.paceLabel,
         capacity: definition.capacity,
         routeDescription: source && source.routeDescription || "",
-        routeNeedsReview: !!(source && source.routeDescription),
+        routeNeedsReview: false,
       });
     });
     result = { runId: run.id, status: "draft" };
+  } else if (operation === "updateLocations") {
+    if (!Array.isArray(request.locations) || request.locations.length < 1 || request.locations.length > 30 ||
+        request.locations.some((location) => typeof location !== "string" || !location.trim() || location.trim().length > 120) ||
+        new Set(request.locations.map((location) => location.trim().toLowerCase())).size !== request.locations.length) {
+      fail_("INVALID_CONFIGURATION", "Supply 1–30 unique location names, each no longer than 120 characters.");
+    }
+    const locations = request.locations.map((location) => location.trim());
+    if (typeof request.location !== "string" || !locations.includes(request.location.trim())) {
+      fail_("INVALID_CONFIGURATION", "Select a location from the saved venue list.");
+    }
+    const removed = (snapshot.config.locations || []).filter((location) => !locations.some((candidate) => candidate.toLowerCase() === location.toLowerCase()));
+    if (snapshot.weeks.some((week) => removed.includes(week.location) && ["draft", "published"].includes(week.status) && new Date(week.startsAt) > new Date())) {
+      fail_("LOCATION_IN_USE", "A future week uses this venue. Change that week's location before removing it.");
+    }
+    snapshot.config.locations = clubLocationOptions_(Object.assign({}, snapshot.config, { locations }));
+    snapshot.config.location = request.location.trim();
+    const locationMaps = Object.assign({}, DEFAULT_CLUB_LOCATION_MAPS, request.locationMaps || snapshot.config.locationMaps || {});
+    Object.keys(locationMaps).forEach((venue) => { if (!snapshot.config.locations.includes(venue)) delete locationMaps[venue]; });
+    if (!locationMaps || typeof locationMaps !== "object" || Array.isArray(locationMaps) ||
+        Object.keys(locationMaps).some((venue) => !locations.includes(venue) || !validMapsUrl_(locationMaps[venue]))) {
+      fail_("INVALID_CONFIGURATION", "Supply valid Google Maps HTTPS links for saved venues.");
+    }
+    snapshot.config.locationMaps = locationMaps;
+    result = { location: snapshot.config.location };
   } else if (operation === "updateMember") {
     const member = snapshot.members.find((entry) => entry.id === request.memberId);
     if (!member) fail_("NOT_FOUND", "The member does not exist.");
@@ -141,7 +172,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     if (!run) fail_("NOT_FOUND", "The run does not exist.");
     expectedVersion_(run, request.runVersion);
     if (["archived", "cancelled"].includes(run.status)) fail_("RUN_CLOSED", "This run is read-only; cancelled runs retain their cancellation status.");
-    const runOperations = ["publishRun", "cancelRun", "archiveRun"];
+    const runOperations = ["updateWeekLocation", "publishRun", "cancelRun", "archiveRun"];
     if (!runOperations.includes(operation)) {
       const ownBooking = operation === "leave" && !request.groupId &&
         snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === actor.id && entry.status !== "cancelled");
@@ -152,6 +183,19 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       touched.add(group.id);
     }
     switch (operation) {
+      case "updateWeekLocation": {
+        if (!admin) fail_("FORBIDDEN", "Only administrators can change a week location.");
+        if (!["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published week can change location.");
+        const location = String(request.location || "").trim();
+        const locations = Array.isArray(snapshot.config.locations) ? snapshot.config.locations : [];
+        if (!locations.includes(location)) fail_("INVALID_CONFIGURATION", "Choose a saved venue for this week.");
+        run.location = location;
+        const mapsUrl = (snapshot.config.locationMaps || {})[location];
+        if (mapsUrl) run.mapsUrl = mapsUrl;
+        else delete run.mapsUrl;
+        result = { location, mapsUrl: mapsUrl || null };
+        break;
+      }
       case "publishRun":
         if (run.status !== "draft" || new Date(run.startsAt) <= now || new Date(run.bookingClosesAt) <= now) fail_("INVALID_PUBLISH", "Only future draft runs with an open booking window can be published.");
         if (snapshot.weeks.some((entry) => entry.id !== run.id && entry.status === "published" && new Date(entry.startsAt) > now)) fail_("PUBLISHED_RUN_EXISTS", "Another future run is already published.");
@@ -348,6 +392,11 @@ function assertGroupManager_(actor, group) {
   if (!actor.roles.includes("admin") && !(actor.roles.includes("leader") && group.leaderId === actor.id)) fail_("FORBIDDEN", "Only the assigned leader or an administrator can manage this group.");
 }
 function normalizeEmail_(email) { return typeof email === "string" ? email.trim().toLowerCase() : ""; }
+function validMapsUrl_(value) {
+  return typeof value === "string" && value.length <= 2000 &&
+    (/^https:\/\/(?:[a-z0-9-]+\.)*google\.[a-z.]+\/maps(?:[/?#]|$)/i.test(value) ||
+     /^https:\/\/maps\.app\.goo\.gl\/[A-Za-z0-9]+(?:\?.*)?$/i.test(value));
+}
 function requestFingerprint_(request) {
   const fields = Object.keys(request).filter((key) => key !== "secret" && key !== "spreadsheetId").sort();
   return JSON.stringify(fields.map((key) => [key, request[key]]));

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Petts Wood Runners sun and moon club mark</title>
+  <defs>
+    <clipPath id="roundel"><circle cx="256" cy="256" r="244"/></clipPath>
+    <clipPath id="day"><rect x="0" y="0" width="256" height="512"/></clipPath>
+    <clipPath id="night"><rect x="256" y="0" width="256" height="512"/></clipPath>
+    <path id="rays" d="M205 48 223 105 259 61 262 121 311 90 297 149 356 133 326 185 386 186 343 228 399 246 347 276 397 308 339 324 382 371 322 369 349 423 292 404 302 463 254 427 237 484 207 432 175 480 167 420 116 454 132 396 75 408 104 355 44 353 87 310 33 284 84 256 34 221 92 207 52 162 112 170 84 118 143 136 129 75 178 108Z"/>
+    <path id="spark" d="M0-26 5-6 25 0 5 6 0 26-5 6-25 0-5-6Z"/>
+  </defs>
+  <g clip-path="url(#roundel)">
+    <rect width="512" height="512" fill="#fff"/>
+    <rect x="256" width="256" height="512" fill="#050505"/>
+    <g clip-path="url(#day)">
+      <use href="#rays" fill="#050505"/>
+      <circle cx="192" cy="256" r="154" fill="#fff"/>
+      <text x="190" y="280" text-anchor="middle" fill="#050505" font-family="Arial, Helvetica, sans-serif" font-size="88" font-weight="900">PWR</text>
+    </g>
+    <g clip-path="url(#night)">
+      <circle cx="323" cy="256" r="140" fill="#fff"/>
+      <circle cx="365" cy="245" r="124" fill="#050505"/>
+      <g fill="#fff">
+        <use href="#spark" transform="translate(315 85) scale(1.15)"/>
+        <use href="#spark" transform="translate(425 145) scale(.85)"/>
+        <use href="#spark" transform="translate(421 244) scale(1.05)"/>
+        <use href="#spark" transform="translate(376 341) scale(.8)"/>
+        <use href="#spark" transform="translate(300 417) scale(.95)"/>
+        <circle cx="431" cy="69" r="5"/>
+      </g>
+    </g>
+  </g>
+  <circle cx="256" cy="256" r="244" fill="none" stroke="#050505" stroke-width="12"/>
+</svg>

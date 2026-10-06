@@ -3,10 +3,17 @@ import { assertCanBook, assertCanPublish, bookingIsOpen, confirmedCount, nextBoo
 import type { PlatformSnapshot } from "./platform-types";
 import { createRunSchedule } from "./schedule";
 import { GatewayError } from "./gateway";
+import { DEFAULT_LOCATION_MAPS } from "./locations";
 
 // Process-local only: restarts reset this explicitly enabled, synthetic demonstration.
 let store: PlatformSnapshot | undefined;
 const requests = new Map<string, string>();
+function validDemoMapsUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && (url.hostname === "google.com" || url.hostname.endsWith(".google.com") || url.hostname === "maps.app.goo.gl");
+  } catch { return false; }
+}
 function enabled() {
   if (process.env.CLUB_DEMO_MODE !== "true") throw new GatewayError("Demo mode is disabled.", 404, "DEMO_DISABLED");
   store ??= createDemoSnapshot();
@@ -117,6 +124,41 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     group!.version++;
   };
   switch (operation) {
+    case "updateLocations": {
+      requireAdmin();
+      const locations = payload.locations;
+      const location = String(payload.location ?? "").trim();
+      if (!Array.isArray(locations) || !locations.length || locations.length > 30 ||
+          locations.some(value => typeof value !== "string" || !value.trim() || value.trim().length > 120) ||
+          new Set(locations.map(value => value.trim().toLowerCase())).size !== locations.length ||
+          !locations.includes(location)) throw new Error("Choose a saved location or add a unique location name.");
+      const removedLocations = (next.config.locations ?? []).filter(existing => !locations.some(value => value.toLowerCase() === existing.toLowerCase()));
+      if (next.weeks.some(week => removedLocations.includes(week.location ?? "") && ["draft", "published"].includes(week.status) && new Date(week.startsAt) > now)) {
+        throw new Error("A future week uses this location. Change that week's location before removing it.");
+      }
+      next.config.locations = locations.map(value => value.trim());
+      next.config.location = location;
+      const locationMaps = Object.assign({}, DEFAULT_LOCATION_MAPS, (payload.locationMaps as Record<string, string> | undefined) ?? next.config.locationMaps ?? {});
+      Object.keys(locationMaps).forEach(venue => { if (!next.config.locations!.includes(venue)) delete locationMaps[venue]; });
+      if (Object.entries(locationMaps).some(([venue, url]) => !next.config.locations!.includes(venue) || !validDemoMapsUrl(url))) {
+        throw new Error("Use valid Google Maps HTTPS links for saved venues.");
+      }
+      next.config.locationMaps = locationMaps;
+      break;
+    }
+    case "updateWeekLocation": {
+      requireAdmin();
+      requireRun();
+      if (!["draft", "published"].includes(run!.status) || new Date(run!.startsAt) <= now) throw new Error("Only a future draft or published week can change location.");
+      const location = String(payload.location ?? "").trim();
+      if (!next.config.locations?.includes(location)) throw new Error("Choose a saved venue for this week.");
+      run!.location = location;
+      const mapsUrl = next.config.locationMaps?.[location];
+      if (mapsUrl) run!.mapsUrl = mapsUrl;
+      else delete run!.mapsUrl;
+      run!.version++;
+      break;
+    }
     case "book": requireGroup(); book(actorId); break;
     case "leave": requireRun(); if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed."); leave(actorId); break;
     case "switchGroup":
@@ -133,18 +175,23 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       const parsed = new Date(`${date}T12:00:00Z`);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date || parsed.getUTCDay() !== 2) throw new Error("Choose a valid Tuesday.");
       if (next.weeks.some(w => w.id === `demo-run-${date}`)) throw new Error("This week already exists.");
-      const created: Run = { id: `demo-run-${date}`, ...createRunSchedule(date, now, next.config), status: "draft", version: 1 };
+      const locations = next.config.locations ?? [next.config.location].filter(location => !/\bDEMO\b/i.test(location));
+      const configuredLocation = next.config.location;
+      const location = String(payload.location || (locations.includes(configuredLocation) ? configuredLocation : locations[0]) || configuredLocation || "").trim();
+      if (!locations.includes(location) && !(next.config.demoConfiguration && !locations.length)) throw new Error("Choose a saved venue for this week.");
+      const created: Run = { id: `demo-run-${date}`, ...createRunSchedule(date, now, next.config), location,
+        ...(next.config.locationMaps?.[location] ? { mapsUrl: next.config.locationMaps[location] } : {}), status: "draft", version: 1 };
       const template = payload.copyFromRunId ? next.weeks.find(w => w.id === payload.copyFromRunId) : undefined;
       if (payload.copyFromRunId && !template) throw new Error("Source week not found.");
       next.weeks.push(created);
       for (const definition of createDemoSnapshot(now).groups.slice(0, 13)) {
         const copied = template ? next.groups.find(g => g.runId === template.id && g.number === definition.number) : undefined;
         next.groups.push({ ...definition, id: `${created.id}-group-${definition.number}`, runId: created.id,
-          leaderId: undefined, sweeperId: undefined, routeDescription: copied?.routeDescription ?? "", routeNeedsReview: Boolean(copied), version: 1 });
+          leaderId: undefined, sweeperId: undefined, routeDescription: copied?.routeDescription ?? "", routeNeedsReview: false, version: 1 });
       }
       break;
     }
-    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); if (next.groups.some(g => g.runId === run!.id && g.routeNeedsReview)) throw new Error("Review copied routes before publishing."); run!.status = "published"; run!.version++; break;
+    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); run!.status = "published"; run!.version++; break;
     case "cancelRun": {
       requireAdmin(); requireRun();
       if (!["published", "draft"].includes(run!.status)) throw new Error("This week cannot be cancelled.");

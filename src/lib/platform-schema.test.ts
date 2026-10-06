@@ -12,6 +12,7 @@ const fixture = {
 describe("snapshot integrity", () => {
   it("accepts supported weekly data and legacy capacity on read", () => {
     expect(snapshotSchema.safeParse(fixture).success).toBe(true);
+    expect(snapshotSchema.safeParse({ ...fixture, weeks: [{ ...fixture.weeks[0], location: "Willett Recreation Ground" }] }).success).toBe(true);
     expect(snapshotSchema.safeParse({ ...fixture, groups: fixture.groups.map((group) => ({ ...group, capacity: 20 })) }).success).toBe(true);
   });
   it("rejects duplicate active identities and cross-week references", () => {
@@ -46,5 +47,16 @@ describe("snapshot integrity", () => {
       operation: "updateMember", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d",
       memberId: "m", memberVersion: 1, name: "Runner", roles: ["owner"], active: true,
     }).success).toBe(false);
+  });
+  it("accepts admin location updates with unique saved venues", () => {
+    const base = { operation: "updateLocations", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", location: "Willett Recreation Ground", locations: ["Willett Recreation Ground"] };
+    expect(mutationSchema.safeParse(base).success).toBe(true);
+    expect(mutationSchema.safeParse({ ...base, locations: ["Willett Recreation Ground", " willett recreation ground "] }).success).toBe(false);
+    expect(mutationSchema.safeParse({ ...base, location: "Unlisted Venue" }).success).toBe(true);
+  });
+  it("accepts a location on week creation and week-location updates", () => {
+    const requestId = "013eb46c-22e2-45db-9c1d-f3bc86a7988d";
+    expect(mutationSchema.safeParse({ operation: "createWeek", requestId, date: "2026-10-13", location: "Willett Recreation Ground" }).success).toBe(true);
+    expect(mutationSchema.safeParse({ operation: "updateWeekLocation", requestId, runId: "w", runVersion: 1, location: "Willett Recreation Ground" }).success).toBe(true);
   });
 });
