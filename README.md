@@ -18,9 +18,9 @@ Available checks: `npm test`, `npm run lint`, `npm run build`. External services
 
 ## Owner confirmation required before publication
 
-The scaffold's Riverside Pavilion, Meadow Lane and Tuesday 18:30 are **editable DEMO assumptions**, not confirmed club facts. Europe/London is an explicit UK-oriented demo timezone, not a silent US timezone default. Confirm the location, IANA timezone, Tuesday start and cutoff, all 13 names/distances/paces, and eligible leadership roles before using live data. Scheduling uses club-local dates and accounts for daylight saving; do not hard-code a UTC offset.
+The scaffold's Riverside Pavilion, Meadow Lane and Tuesday 18:30 are **editable DEMO assumptions**, not confirmed club facts. Europe/London is an explicit UK-oriented demo timezone, not a silent US timezone default. Confirm the location, IANA timezone, Tuesday start and cutoff, every configured group's name/distance/pace, and eligible leadership roles before using live data. Scheduling uses club-local dates and accounts for daylight saving; do not hard-code a UTC offset.
 
-Capacity is **19 confirmed people per group, including leader and optional sweeper**. A person filling both roles consumes one place. Membership can have overlapping comma-separated roles: `runner`, `leader`, `sweeper`, `admin`. Display names are never identity keys.
+Configure 1–20 groups with unique positive numbers up to 20 in the workbook; decimal labels such as `1.5` are supported. Each group can hold 1–20 confirmed people, including its leader and optional sweeper; a person filling both roles consumes one place. Membership can have overlapping comma-separated roles: `runner`, `leader`, `sweeper`, `admin`. Display names are never identity keys.
 
 ## Authentication setup (NextAuth v4)
 

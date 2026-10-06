@@ -10,7 +10,7 @@ class Clock extends Date {
   constructor(value?: string | number | Date) { super(value === undefined ? now : value); }
   static now() { return Date.parse(now); }
 }
-type Cell = string | number | boolean;
+type Cell = string | number | boolean | Date;
 class Sheet {
   cells: Cell[][] = [];
   protected = false;
@@ -85,7 +85,7 @@ class Workbook {
 function fixture(): PlatformSnapshot {
   return {
     demo: false,
-    config: { location: "DEMO", timeZone: "Europe/London", startTime: "18:30", demoConfiguration: true },
+    config: { location: "DEMO", timeZone: "Europe/London", startTime: "19:00", demoConfiguration: true },
     weeks: [{ id: "run", startsAt: "2026-08-11T17:30:00Z", bookingOpensAt: "2026-08-01T00:00:00Z", bookingClosesAt: "2026-08-11T16:30:00Z", status: "published", version: 1 }],
     groups: Array.from({ length: 13 }, (_, index) => ({
       id: "g" + (index + 1), runId: "run", number: index + 1, paceLabel: "DEMO", capacity: index === 0 ? 1 : 19, version: 1,
@@ -142,7 +142,9 @@ function harness(snapshot?: PlatformSnapshot) {
         }).formatToParts(date);
         const get = (type: string) => parts.find((part) => part.type === type)!.value;
         const day = `${get("year")}-${get("month")}-${get("day")}`;
-        return pattern === "yyyy-MM-dd" ? day : `${day}T${get("hour")}:${get("minute")}:${get("second")}`;
+        if (pattern === "yyyy-MM-dd") return day;
+        if (pattern === "HH:mm") return `${get("hour")}:${get("minute")}`;
+        return `${day}T${get("hour")}:${get("minute")}:${get("second")}`;
       },
     },
   });
@@ -394,8 +396,8 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ operation: "createWeek", email: "admin@example.org", date: "2026-10-27", copyFromRunId: "run" }).ok).toBe(true);
     const state = app.state();
     const week = state.weeks.find((entry) => entry.id === "run-2026-10-27")!;
-    expect(week.startsAt).toBe("2026-10-27T18:30:00.000Z");
-    expect(week.bookingClosesAt).toBe("2026-10-27T17:30:00.000Z");
+    expect(week.startsAt).toBe("2026-10-27T19:00:00.000Z");
+    expect(week.bookingClosesAt).toBe("2026-10-27T18:30:00.000Z");
     const groups = state.groups.filter((entry) => entry.runId === week.id);
     expect(groups).toHaveLength(13);
     expect(groups[0]).toMatchObject({ routeDescription: "Copied route", routeNeedsReview: true });
@@ -588,16 +590,20 @@ describe("Apps Script locked gateway", () => {
 });
 
 describe("Apps Script manual migration", () => {
-  function prepareConfiguration(app: ReturnType<typeof harness>) {
+  function prepareConfiguration(app: ReturnType<typeof harness>, count = 13, capacity = 19) {
     app.post({ operation: "snapshot" });
     const definitions = app.workbook.getSheetByName("GroupDefinitions")!;
     definitions.cells.slice(1).forEach((row, index) => {
       row[1] = `${index + 1} km`;
       row[2] = `${index + 4}:00 min/km`;
+      row[3] = capacity;
     });
+    for (let number = definitions.cells.length; number <= count; number++) {
+      definitions.cells.push([number, `${number} km`, `${number + 3}:00 min/km`, capacity, `definition-group-${number}`]);
+    }
     app.workbook.getSheetByName("ClubConfiguration")!.cells = [
-      ["Setting", "Value"], ["Location", "Confirmed club meeting point"], ["Time Zone", "Europe/London"],
-      ["Start Time", "18:30"], ["Demo Configuration", false],
+      ["Setting", "Value"], ["Location", "Confirmed club meeting point"], ["Time Zone", "America/New_York"],
+      ["Start Time", new Date(Date.UTC(1899, 11, 30, 19, 30))], ["Demo Configuration", false],
     ];
   }
   function legacy() {
@@ -653,7 +659,7 @@ describe("Apps Script manual migration", () => {
     initial.groups[0].routeDescription = "Last week's route";
     const app = harness(initial);
     app.post({ operation: "snapshot" });
-    runInContext('PLATFORM_CONFIG.location = "Club meeting point"', app.context);
+    runInContext('PLATFORM_CONFIG.location = "Club meeting point"; PLATFORM_CONFIG.timeZone = "America/New_York"; PLATFORM_CONFIG.startTime = "19:30"; PLATFORM_CONFIG.demoConfiguration = false', app.context);
     const master = app.workbook.getSheetByName("Groups")!;
     master.cells.slice(1).forEach((row, index) => {
       row[1] = `${index + 1} km`;
@@ -663,7 +669,7 @@ describe("Apps Script manual migration", () => {
     expect(master.cells[1][1]).toBe("1 km");
     runInContext("confirmClubConfiguration()", app.context);
     expect(app.workbook.backups).toBe(1);
-    expect(app.state().config.demoConfiguration).toBe(false);
+    expect(app.state().config).toMatchObject({ timeZone: "America/New_York", startTime: "19:30", demoConfiguration: false });
     expect(app.mutate({ operation: "createWeek", email: "admin@example.org", date: "2026-08-18", copyFromRunId: "run" }).ok).toBe(true);
     const group = app.state().groups.find((entry) => entry.runId === "run-2026-08-18" && entry.number === 1)!;
     expect(group).toMatchObject({
@@ -673,16 +679,44 @@ describe("Apps Script manual migration", () => {
     expect(master.cells).toHaveLength(14);
     expect(master.cells[0]).toEqual(["Group", "Distance", "Pace", "Capacity", "Group ID"]);
   });
-  it("rejects master capacity changes before backup or canonical commit", () => {
+  it("accepts 20 groups at capacity 20 and rejects capacity above 20", () => {
     const initial = fixture();
+    initial.groups[1].id = "run-definition-group-2";
+    initial.groups[1].routeDescription = "Route for decimal group";
     const app = harness(initial);
     app.post({ operation: "snapshot" });
-    app.workbook.getSheetByName("Groups")!.cells[1][3] = 20;
-    expect(() => runInContext("confirmClubConfiguration()", app.context)).toThrow("fixed capacity 19");
+    runInContext('PLATFORM_CONFIG.location = "Club meeting point"; PLATFORM_CONFIG.demoConfiguration = false', app.context);
+    const definitions = app.workbook.getSheetByName("Groups")!;
+    definitions.cells.slice(1).forEach((row, index) => {
+      row[1] = `${index + 1} km`;
+      row[2] = `${index + 4}:00 min/km`;
+      row[3] = 20;
+    });
+    for (let number = definitions.cells.length; number <= 20; number++) {
+      definitions.cells.push([number, `${number} km`, `${number + 3}:00 min/km`, 20, `definition-group-${number}`]);
+    }
+    definitions.cells[1][3] = 21;
+    expect(() => runInContext("confirmClubConfiguration()", app.context)).toThrow("capacity 1–20");
     expect(app.workbook.backups).toBe(0);
-    expect(app.state()).toEqual(initial);
+    definitions.cells[1][3] = 20;
+    definitions.cells.push([21, "21 km", "24:00 min/km", 20, "definition-group-21"]);
+    expect(() => runInContext("confirmClubConfiguration()", app.context)).toThrow("1–20 groups with unique positive numbers");
+    expect(app.workbook.backups).toBe(0);
+    definitions.cells.pop();
+    definitions.cells[2][0] = 1.5;
+    runInContext("confirmClubConfiguration()", app.context);
+    expect(app.workbook.backups).toBe(1);
+    expect(app.canonical().groupDefinitions).toHaveLength(20);
+    expect(app.canonical().groupDefinitions[1]).toMatchObject({ number: 1.5, capacity: 20 });
+    expect(app.canonical().groupDefinitions[19]).toMatchObject({ number: 20, capacity: 20 });
+    expect(app.mutate({ operation: "createWeek", email: "admin@example.org", date: "2026-08-18", copyFromRunId: "run" }).ok).toBe(true);
+    expect(app.state().groups.filter((group) => group.runId === "run-2026-08-18")).toHaveLength(20);
+    expect(app.state().groups.find((group) => group.runId === "run-2026-08-18" && group.id.endsWith("definition-group-2"))).toMatchObject({
+      number: 1.5, routeDescription: "Route for decimal group", routeNeedsReview: true,
+    });
+    expect(app.state().groups.filter((group) => group.runId === "run-2026-08-18").every((group) => group.capacity === 20)).toBe(true);
   });
-  it("preserves twenty-person historical capacities while migrating live groups to nineteen", () => {
+  it("preserves twenty-person historical capacities while keeping the default template at nineteen", () => {
     const app = legacy();
     app.workbook.getSheetByName("Runs")!.cells[1][1] = "2026-07-28T17:30:00Z";
     app.workbook.getSheetByName("Runs")!.cells[1][4] = "archived";
@@ -703,7 +737,7 @@ describe("Apps Script manual migration", () => {
     expect(app.state().members).toHaveLength(2);
     const trustedId = app.state().members.find((member) => member.email === "runner@example.org")!.id;
     expect(trustedId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
-    expect(app.state().config).toMatchObject({ location: "Confirmed club meeting point", demoConfiguration: false });
+    expect(app.state().config).toMatchObject({ location: "Confirmed club meeting point", timeZone: "America/New_York", startTime: "19:30", demoConfiguration: false });
     expect(app.canonical().groupDefinitions[0]).toMatchObject({ distanceLabel: "1 km", paceLabel: "4:00 min/km", capacity: 19 });
     expect(app.post({ operation: "snapshot", email: "runner@example.org" }).data?.currentMemberId).toBe(trustedId);
     expect(app.mutate({ operation: "createWeek", email: "admin@example.org", date: "2026-08-11" }).ok).toBe(true);

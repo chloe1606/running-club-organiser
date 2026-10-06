@@ -1,6 +1,6 @@
 import type { PlatformSnapshot } from "./platform-types";
 import type { Run } from "./domain";
-import { clubDateTime, nextTuesdayDate, GROUP_CAPACITY } from "./schedule";
+import { BOOKING_CUTOFF, clubDateTime, nextTuesdayDate, GROUP_CAPACITY } from "./schedule";
 
 export const demoPersonas = {
   runner: "demo-runner",
@@ -22,7 +22,7 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
   ];
   const snapshot: PlatformSnapshot = {
     weeks: [], groups: [], bookings: [], members, attendance: [], audit: [],
-    config: { location: "Riverside Pavilion, Meadow Lane", startTime: "18:30", timeZone: "Europe/London", demoConfiguration: true },
+    config: { location: "Riverside Pavilion, Meadow Lane", startTime: "19:00", timeZone: "Europe/London", demoConfiguration: true },
     demo: true, currentMemberId: demoPersonas.runner,
   };
   const leaders = [demoPersonas.leader, demoPersonas.admin, ...members.slice(3, 14).map(m => m.id)];
@@ -31,9 +31,9 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
     date.setUTCDate(date.getUTCDate() - 7 * w);
     const iso = date.toISOString().slice(0, 10);
     const run: Run = {
-      id: `demo-run-${iso}`, startsAt: clubDateTime(iso, "18:30"),
+      id: `demo-run-${iso}`, startsAt: clubDateTime(iso, "19:00"),
       bookingOpensAt: w === 0 ? new Date(now.getTime() - 86400000).toISOString() : new Date(date.getTime() - 4 * 86400000).toISOString(),
-      bookingClosesAt: clubDateTime(iso, "17:30"), status: w ? "archived" : "published", version: 1,
+      bookingClosesAt: clubDateTime(iso, BOOKING_CUTOFF), status: w ? "archived" : "published", version: 1,
     };
     snapshot.weeks.push(run);
     for (let g = 0; g < 13; g++) {

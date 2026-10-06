@@ -81,22 +81,21 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     if (request.copyFromRunId) {
       if (!snapshot.weeks.some((week) => week.id === request.copyFromRunId)) fail_("NOT_FOUND", "The source week does not exist.");
       sourceGroups = snapshot.groups.filter((entry) => entry.runId === request.copyFromRunId);
-      if (sourceGroups.length !== 13) fail_("INVALID_GROUPS", "The source week must have exactly thirteen groups.");
     }
     snapshot.weeks.push(run);
-    for (let number = 1; number <= 13; number++) {
-      const source = sourceGroups.find((entry) => entry.number === number);
-      const definition = groupDefinitions.find((entry) => entry.number === number);
+    groupDefinitions.slice().sort((left, right) => left.number - right.number).forEach((definition) => {
+      const source = sourceGroups.find((entry) => entry.id === request.copyFromRunId + "-" + definition.id) ||
+        sourceGroups.find((entry) => entry.number === definition.number);
       snapshot.groups.push({
-        id: run.id + "-" + definition.id, runId: run.id, number, version: 1,
-        name: definition.name || "Group " + number,
+        id: run.id + "-" + definition.id, runId: run.id, number: definition.number, version: 1,
+        name: definition.name || "Group " + definition.number,
         distanceLabel: definition.distanceLabel,
         paceLabel: definition.paceLabel,
-        capacity: 19,
+        capacity: definition.capacity,
         routeDescription: source && source.routeDescription || "",
         routeNeedsReview: !!(source && source.routeDescription),
       });
-    }
+    });
     result = { runId: run.id, status: "draft" };
   } else if (operation === "updateMember") {
     const member = snapshot.members.find((entry) => entry.id === request.memberId);

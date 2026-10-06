@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tuesday Club Runs",
+  title: "Petts Wood Runners Booking App",
   description: "Book your Tuesday evening club run.",
 };
 

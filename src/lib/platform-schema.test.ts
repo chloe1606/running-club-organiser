@@ -30,9 +30,16 @@ describe("snapshot integrity", () => {
     const outcome = { id: "a", runId: "w", groupId: "g", memberId: "m", outcome: "present", recordedAt: "2026-10-06T18:30:00Z" };
     expect(snapshotSchema.safeParse({ ...fixture, attendance: [outcome, { ...outcome, id: "b" }] }).success).toBe(false);
   });
-  it("requires all thirteen distinct live group definitions", () => {
+  it("accepts up to twenty uniquely numbered live groups, including decimals", () => {
     expect(snapshotSchema.safeParse({ ...fixture, groups: fixture.groups.slice(1) }).success).toBe(false);
     expect(snapshotSchema.safeParse({ ...fixture, groups: fixture.groups.map((group) => ({ ...group, number: 1 })) }).success).toBe(false);
+    const twentyGroups = Array.from({ length: 20 }, (_, index) => ({
+      ...fixture.groups[0], id: index === 0 ? "g" : `g${index + 1}`, number: index + 0.5, capacity: 20,
+    }));
+    expect(snapshotSchema.safeParse({ ...fixture, groups: twentyGroups }).success).toBe(true);
+    expect(snapshotSchema.safeParse({ ...fixture, groups: [...twentyGroups, { ...twentyGroups[19], id: "g21", number: 20 }] }).success).toBe(false);
+    expect(snapshotSchema.safeParse({ ...fixture, groups: twentyGroups.map((group) => ({ ...group, number: 1.5 })) }).success).toBe(false);
+    expect(snapshotSchema.safeParse({ ...fixture, groups: fixture.groups.map((group) => ({ ...group, capacity: 21 })) }).success).toBe(false);
   });
   it("limits editable roles to trusted known roles", () => {
     expect(mutationSchema.safeParse({

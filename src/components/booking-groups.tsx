@@ -24,7 +24,7 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
       const leader = snapshot.members.find(m => m.id === group.leaderId)?.name;
       const sweeper = snapshot.members.find(m => m.id === group.sweeperId)?.name;
       return <article className={`group ${mine ? "my-group" : ""}`} key={group.id}>
-        <div className="group-top"><span className="group-number">{String(group.number).padStart(2, "0")}</span><span className={`availability ${spaces === 0 ? "full" : spaces < 5 ? "amber" : "green"}`}>{spaces === 0 ? "Full · waitlist" : `${spaces} places left`}</span></div>
+        <div className="group-top"><span className="group-number">{Number.isInteger(group.number) ? String(group.number).padStart(2, "0") : String(group.number)}</span><span className={`availability ${spaces === 0 ? "full" : spaces < 5 ? "amber" : "green"}`}>{spaces === 0 ? "Full · waitlist" : `${spaces} places left`}</span></div>
         <h3>{group.name ?? `Group ${group.number}`}</h3><p className="pace">{group.paceLabel}</p><p>{group.distanceLabel ?? "Distance to be confirmed"}</p>
         <div className="occupancy"><span style={{ width: `${Math.min(100, count / group.capacity * 100)}%` }} /></div>
         <p>{count}/{group.capacity} confirmed · {waitlist} waiting</p>

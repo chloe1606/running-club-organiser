@@ -44,8 +44,8 @@ describe("isolated explicit demo", () => {
   });
   it("uses club-local Tuesday, including DST change, rather than a hard-coded week", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-23T12:00:00Z"));
-    expect(snapshot.weeks[0].startsAt).toBe("2026-10-27T18:30:00.000Z");
-    expect(snapshot.weeks[0].bookingClosesAt).toBe("2026-10-27T17:30:00.000Z");
+    expect(snapshot.weeks[0].startsAt).toBe("2026-10-27T19:00:00.000Z");
+    expect(snapshot.weeks[0].bookingClosesAt).toBe("2026-10-27T18:30:00.000Z");
   });
   it("returns independent copies and removes nonadmin emails and audit", async () => {
     const { getDemoSnapshot } = await setup();

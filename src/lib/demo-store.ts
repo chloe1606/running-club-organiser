@@ -108,7 +108,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     if (source === "member" && !member.roles.includes("runner")) throw new Error("Runner role required.");
     if (source === "member") assertCanBook(run!, group!, next.bookings, memberId, now);
     const status = source === "assignment"
-      ? (confirmedCount(group!.id, next.bookings, group) <= Math.min(group!.capacity, 19) ? "confirmed" : "waitlisted")
+      ? (confirmedCount(group!.id, next.bookings, group) <= Math.min(group!.capacity, 20) ? "confirmed" : "waitlisted")
       : nextBookingStatus(group!, next.bookings);
     if (source === "assignment" && status === "waitlisted") throw new Error("This group has no room for an assignment.");
     next.bookings.push({ id: `demo-booking-${requestId}-${memberId}`, runId: run!.id, groupId: group!.id,

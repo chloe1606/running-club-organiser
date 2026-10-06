@@ -38,10 +38,11 @@ describe("booking rules", () => {
     expect(() => assertCanPublish({ ...run, id: "next", status: "draft" }, [run], new Date("2026-08-02T00:00:00Z"))).toThrow("already published");
   });
 
-  it("counts assignment occupants once and enforces the nineteen-person ceiling", () => {
+  it("counts assignment occupants once and allows capacity through twenty", () => {
     expect(confirmedCount(group.id, [confirmed], { ...group, leaderId: "one", sweeperId: "two" })).toBe(2);
-    const nineteen = Array.from({ length: 19 }, (_, index) => ({ ...confirmed, id: `${index}`, memberId: `${index}` }));
-    expect(nextBookingStatus({ ...group, capacity: 20 }, nineteen)).toBe("waitlisted");
+    const twenty = Array.from({ length: 20 }, (_, index) => ({ ...confirmed, id: `${index}`, memberId: `${index}` }));
+    expect(nextBookingStatus({ ...group, capacity: 20 }, twenty)).toBe("waitlisted");
+    expect(nextBookingStatus({ ...group, capacity: 20 }, twenty.slice(0, 19))).toBe("confirmed");
   });
 
   it("breaks promotion ties by ID, including equivalent timestamp offsets", () => {

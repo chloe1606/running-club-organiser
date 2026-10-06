@@ -228,7 +228,7 @@ function Admin({ snapshot, run, groups, mutate, pending }: { snapshot: PlatformS
   return <div className="stack">
     <section className="panel"><h2>Week lifecycle</h2><form className="inline-form" onSubmit={create}>
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
-      <label>Copy scaffold<select value={copy} onChange={e => setCopy(e.target.value)}><option value="">Default 13 groups</option>{snapshot.weeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt)}</option>)}</select></label>
+      <label>Copy scaffold<select value={copy} onChange={e => setCopy(e.target.value)}><option value="">Configured group defaults</option>{snapshot.weeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt)}</option>)}</select></label>
       <button disabled={pending}>Create draft week</button>
     </form><p className="hint">Copied routes need review. No runners or volunteer assignments are copied.</p>
       {run && <><div className="actions">

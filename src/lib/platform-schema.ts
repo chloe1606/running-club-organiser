@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_GROUP_CAPACITY, MAX_GROUP_COUNT } from "./schedule";
 
 const id = z.string().min(1).max(120);
 const version = z.number().int().nonnegative();
@@ -12,8 +13,8 @@ export const snapshotSchema = z.object({
     cancellationReason: z.string().optional(), version,
   })),
   groups: z.array(z.object({
-    id, runId: id, number: z.number().int().min(1).max(13),
-    paceLabel: z.string().min(1), capacity: z.number().int().min(1).max(20), version,
+    id, runId: id, number: z.number().positive().max(MAX_GROUP_COUNT),
+    paceLabel: z.string().min(1), capacity: z.number().int().min(1).max(MAX_GROUP_CAPACITY), version,
     distanceLabel: z.string().optional(), name: z.string().optional(),
     leaderId: z.string().optional(), sweeperId: z.string().optional(),
     routeDescription: z.string().optional(), routeNeedsReview: z.boolean().optional(),
@@ -62,7 +63,9 @@ export const snapshotSchema = z.object({
         Date.parse(week.bookingClosesAt) >= Date.parse(week.startsAt)) fail("Invalid booking window.");
     if (week.status === "draft" || week.status === "published") {
       const groups = snapshot.groups.filter((group) => group.runId === week.id);
-      if (groups.length !== 13 || new Set(groups.map((group) => group.number)).size !== 13) fail("Every live week must have thirteen distinct groups.");
+      if (!groups.length || groups.length > MAX_GROUP_COUNT || new Set(groups.map((group) => group.number)).size !== groups.length) {
+        fail("Every live week must have 1–20 groups with unique numbers.");
+      }
     }
   }
   for (const group of snapshot.groups) {
