@@ -1,12 +1,13 @@
 import { google } from "googleapis";
 import { z } from "zod";
 import { mutateSheet } from "./gateway";
+import "server-only";
 
 const memberSchema = z.object({
-  memberId: z.string().min(1),
+  memberId: z.string().trim().min(1),
   email: z.string().trim().toLowerCase().pipe(z.email()),
-  displayName: z.string().min(1),
-  roles: z.string(),
+  displayName: z.string().trim().min(1),
+  roles: z.string().trim().min(1),
   active: z.enum(["TRUE", "FALSE"]),
   version: z.coerce.number().int().nonnegative(),
 });
@@ -74,25 +75,42 @@ function configuredAuth() {
 }
 
 export async function readMembers(): Promise<Member[]> {
-  const { auth, sheetId } = configuredAuth();
-  const sheets = google.sheets({ version: "v4", auth });
-  const metadata = await sheets.spreadsheets.get({
-    spreadsheetId: sheetId,
-    fields: "sheets.properties.title",
-  });
-  if (metadata.data.sheets?.some((sheet) => sheet.properties?.title === "_PlatformState")) {
-    // Read the committed source, not potentially lagging Users projections.
-    return parseCanonicalMembers(await mutateSheet("snapshot", {}));
+  let stage = "Google Sheets client configuration";
+  try {
+    const { auth, sheetId } = configuredAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    stage = "spreadsheet metadata read";
+    const metadata = await sheets.spreadsheets.get({
+      spreadsheetId: sheetId,
+      fields: "sheets.properties.title",
+    });
+    if (metadata.data.sheets?.some((sheet) => sheet.properties?.title === "_PlatformState")) {
+      // Read the committed source, not potentially lagging Users projections.
+      stage = "canonical membership snapshot";
+      const snapshot = await mutateSheet("snapshot", {});
+      stage = "canonical membership validation";
+      return parseCanonicalMembers(snapshot);
+    }
+    stage = "legacy Members sheet read";
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: "Members!A:Z",
+    });
+    const [headers, ...rows] = response.data.values ?? [];
+    if (!headers) {
+      throw new Error("The Members sheet has no header row.");
+    }
+    stage = "legacy membership validation";
+    return parseMembers(headers, rows);
+  } catch (error) {
+    const detail = error as { code?: unknown; status?: unknown };
+    const code = typeof detail.code === "string" && /^[A-Z0-9_-]{1,40}$/i.test(detail.code)
+      ? ` code=${detail.code}`
+      : "";
+    const status = typeof detail.status === "number" ? ` status=${detail.status}` : "";
+    console.error(`Membership read failed during ${stage}.${status}${code}`);
+    throw error;
   }
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: "Members!A:Z",
-  });
-  const [headers, ...rows] = response.data.values ?? [];
-  if (!headers) {
-    throw new Error("The Members sheet has no header row.");
-  }
-  return parseMembers(headers, rows);
 }
 
 export async function findActiveMemberByEmail(email: string): Promise<Member | undefined> {

@@ -15,6 +15,9 @@ export function smtpTransportOptions(value: string, production = process.env.NOD
       url.search || url.hash || (url.pathname && url.pathname !== "/")) {
     throw new Error("Invalid SMTP configuration.");
   }
+  if (url.port && (Number(url.port) < 1 || Number(url.port) > 65535)) {
+    throw new Error("Invalid SMTP configuration.");
+  }
   const secure = url.protocol === "smtps:";
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const localTest = !production && ["localhost", "127.0.0.1", "::1"].includes(host);
@@ -35,6 +38,24 @@ export function smtpTransportOptions(value: string, production = process.env.NOD
   };
 }
 
+export function smtpServerUrl(): string | null {
+  const host = process.env.EMAIL_SERVER_HOST?.trim();
+  const port = process.env.EMAIL_SERVER_PORT?.trim();
+  const user = process.env.EMAIL_SERVER_USER;
+  const password = process.env.EMAIL_SERVER_PASSWORD;
+  if (!host || !port || !user || !password || !/^\d+$/.test(port)) return null;
+  const portNumber = Number(port);
+  if (portNumber < 1 || portNumber > 65535) return null;
+  try {
+    const hostUrl = new URL(`smtp://${host}`);
+    if (!hostUrl.hostname || hostUrl.username || hostUrl.password || hostUrl.port ||
+      (hostUrl.pathname && hostUrl.pathname !== "/") || hostUrl.search || hostUrl.hash) return null;
+    return `smtp://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${hostUrl.hostname}:${portNumber}/`;
+  } catch {
+    return null;
+  }
+}
+
 function siteUrl(): URL | null {
   try {
     const url = new URL(process.env.NEXTAUTH_URL ?? "");
@@ -53,7 +74,8 @@ export function isAuthSessionConfigured() {
 export function getAuthAvailability() {
   let smtp = false;
   try {
-    smtp = Boolean(process.env.EMAIL_SERVER && smtpTransportOptions(process.env.EMAIL_SERVER));
+    const server = smtpServerUrl();
+    smtp = Boolean(server && smtpTransportOptions(server));
   } catch {
     smtp = false;
   }
@@ -97,7 +119,7 @@ export const authOptions: NextAuthOptions = {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
     })] : []),
     ...(availability.email ? [EmailProvider({
-      server: process.env.EMAIL_SERVER!,
+      server: smtpServerUrl()!,
       from: process.env.EMAIL_FROM!,
       maxAge: LINK_SECONDS,
       normalizeIdentifier: normalizeAuthEmail,
@@ -135,17 +157,29 @@ export const authOptions: NextAuthOptions = {
         // show the same response before revealing whether membership exists.
         return true;
       }
+      let stage = "provider validation";
       try {
         if (!account || !getAuthAvailability()[account.provider === "google" ? "google" : "email"]) return false;
         if (account.provider === "google") {
           const google = profile as { email?: string; email_verified?: boolean; sub?: string } | undefined;
-          if (google?.email_verified !== true || !google.email || google.sub !== account.providerAccountId) return false;
+          if (google?.email_verified !== true || !google.email || google.sub !== account.providerAccountId) {
+            console.error("Google sign-in denied during Google identity validation.");
+            return false;
+          }
           const address = normalizeAuthEmail(google.email);
-          if (!user.email || normalizeAuthEmail(user.email) !== address) return false;
+          if (!user.email || normalizeAuthEmail(user.email) !== address) {
+            console.error("Google sign-in denied because returned email claims did not match.");
+            return false;
+          }
+          stage = "membership lookup";
           const member = await findActiveMemberByEmail(address);
-          if (!member) return false;
+          if (!member) {
+            console.error("Google sign-in denied because no active membership match was found.");
+            return false;
+          }
           // Only Google's verified identity plus the live, unambiguous membership
           // can link an account. No blanket allowDangerousEmailAccountLinking.
+          stage = "Google account persistence";
           const stored = await adapter.createUser!({
             email: address, name: user.name, image: user.image, emailVerified: new Date(),
           });
@@ -159,6 +193,7 @@ export const authOptions: NextAuthOptions = {
         if (account.provider !== "email" || !user.email) return false;
         return Boolean(await findActiveMemberByEmail(normalizeAuthEmail(user.email)));
       } catch {
+        console.error(`Authentication failed during ${stage}.`);
         return false;
       }
     },

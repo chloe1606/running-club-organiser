@@ -162,7 +162,9 @@ beforeEach(() => {
     GOOGLE_CLIENT_ID: "test-client", GOOGLE_CLIENT_SECRET: "test-google-secret",
     GOOGLE_SHEET_ID: "test-workbook", GOOGLE_SERVICE_ACCOUNT_JSON: "{}",
     APPS_SCRIPT_GATEWAY_URL: "https://gateway.example.org", APPS_SCRIPT_GATEWAY_SECRET: "test-gateway-secret",
-    EMAIL_SERVER: "smtp://test-mail.example.org", EMAIL_FROM: "club@example.org",
+    EMAIL_SERVER_HOST: "smtp-relay.brevo.com", EMAIL_SERVER_PORT: "587",
+    EMAIL_SERVER_USER: "test-user", EMAIL_SERVER_PASSWORD: "test-password",
+    EMAIL_FROM: "club@example.org",
   })) vi.stubEnv(key, value);
   store = storageHarness();
   mocks.mutateSheet.mockImplementation(store.dispatch);
@@ -248,7 +250,7 @@ describe("membership-restricted authentication", () => {
     expect(safeAuthRedirect("/leader?week=1", "https://club.example.org")).toBe("https://club.example.org/leader?week=1");
   });
   it("keeps Google available without SMTP and disables live auth when explicit settings are missing even in demo mode", async () => {
-    vi.stubEnv("EMAIL_SERVER", "");
+    vi.stubEnv("EMAIL_SERVER_HOST", "");
     vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
     const { getAuthAvailability, authOptions } = await import("./auth");
     expect(getAuthAvailability()).toEqual({ google: true, email: false });
@@ -274,9 +276,22 @@ describe("membership-restricted authentication", () => {
     expect(smtpTransportOptions("smtp://mail.example.org", false).requireTLS).toBe(true);
     for (const server of ["https://mail.example.org", "file:///mail", "smtp://mail.example.org?ignoreTLS=true", "smtp://mail.example.org?tls.rejectUnauthorized=false"]) {
       expect(() => smtpTransportOptions(server, true)).toThrow();
-      vi.stubEnv("EMAIL_SERVER", server);
-      expect(getAuthAvailability()).toEqual({ google: true, email: false });
     }
+    vi.stubEnv("EMAIL_SERVER_PORT", "70000");
+    expect(getAuthAvailability()).toEqual({ google: true, email: false });
+  });
+  it("builds the Brevo SMTP URL with safely encoded credentials", async () => {
+    const { smtpServerUrl, getAuthAvailability } = await import("./auth");
+    vi.stubEnv("EMAIL_SERVER_USER", "smtp user+tag@example.org");
+    vi.stubEnv("EMAIL_SERVER_PASSWORD", "secret:/?#@% value");
+    const server = smtpServerUrl();
+    expect(server).not.toBeNull();
+    const url = new URL(server!);
+    expect(decodeURIComponent(url.username)).toBe("smtp user+tag@example.org");
+    expect(decodeURIComponent(url.password)).toBe("secret:/?#@% value");
+    expect(url.hostname).toBe("smtp-relay.brevo.com");
+    expect(url.port).toBe("587");
+    expect(getAuthAvailability().email).toBe(true);
   });
   it("does not transmit credentials or magic links when a production SMTP server cannot start TLS", async () => {
     vi.useRealTimers();
