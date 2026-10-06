@@ -35,6 +35,23 @@ describe("booking rules", () => {
 
   it("rejects a duplicate booking and a second published future run", () => {
     expect(() => assertCanBook(run, group, [confirmed], "one", new Date("2026-08-02T00:00:00Z"))).toThrow("already have");
-    expect(() => assertCanPublish({ ...run, id: "next" }, [run], new Date("2026-08-02T00:00:00Z"))).toThrow("already published");
+    expect(() => assertCanPublish({ ...run, id: "next", status: "draft" }, [run], new Date("2026-08-02T00:00:00Z"))).toThrow("already published");
+  });
+
+  it("counts assignment occupants once and enforces the nineteen-person ceiling", () => {
+    expect(confirmedCount(group.id, [confirmed], { ...group, leaderId: "one", sweeperId: "two" })).toBe(2);
+    const nineteen = Array.from({ length: 19 }, (_, index) => ({ ...confirmed, id: `${index}`, memberId: `${index}` }));
+    expect(nextBookingStatus({ ...group, capacity: 20 }, nineteen)).toBe("waitlisted");
+  });
+
+  it("breaks promotion ties by ID, including equivalent timestamp offsets", () => {
+    const first = { ...confirmed, id: "a", status: "waitlisted" as const, bookedAt: "2026-08-01T01:00:00+01:00" };
+    const second = { ...first, id: "z", bookedAt: "2026-08-01T00:00:00Z" };
+    expect(promoteFirstWaitlisted(group.id, [second, first])?.id).toBe("a");
+  });
+
+  it("does not publish past or non-draft runs", () => {
+    expect(() => assertCanPublish(run, [], new Date("2026-08-02T00:00:00Z"))).toThrow("draft");
+    expect(() => assertCanPublish({ ...run, status: "draft" }, [], new Date("2026-08-12T00:00:00Z"))).toThrow("future");
   });
 });
