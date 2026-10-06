@@ -11,6 +11,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .danger { background: #a3322e; border-color: #a3322e; }
 input, select, textarea { background: #fff; border: 1px solid #9cae9f; border-radius: .4rem; color: var(--ink); font: inherit; padding: .65rem; width: 100%; }
 textarea { resize: vertical; min-height: 6rem; }
+.route-input { min-height: 0; }
 label { display: grid; gap: .35rem; font-size: .9rem; font-weight: 700; }
 form { display: grid; gap: .75rem; }
 form button { justify-self: start; }
@@ -60,7 +61,9 @@ p { margin: .6rem 0; }
 .occupancy { margin: .6rem 0 .05rem; width: 100%; height: 5px; border-radius: 9px; background: #edf0e9; overflow: hidden; }
 .occupancy span { display: block; height: 100%; background: var(--green); }
 .volunteers { margin-top: .6rem; border-top: 1px solid var(--line); padding-top: .6rem; }
-.group .route-summary { margin: .4rem 0; font-size: .76rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.3rem; }
+.group .route-summary { min-width: 0; margin: 0; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+.group .route-summary strong { color: #354b39; }
+.group .route-summary .route-link { display: -webkit-box; max-width: 100%; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .group .details-link { margin-top: auto; padding-bottom: .6rem; font-weight: 700; }
 .group button, .group .button { width: 100%; font-size: .8rem; }
 .stack { display: grid; gap: 1.5rem; }

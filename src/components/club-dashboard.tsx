@@ -12,6 +12,7 @@ import { CancelRun } from "./cancel-run";
 import { SignIn, SignOut } from "./auth-controls";
 import { ClubBrand } from "./club-brand";
 import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "@/lib/locations";
+import { RouteDescription } from "./route-description";
 
 export type Mutate = (operation: string, payload: Record<string, unknown>) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
@@ -156,7 +157,7 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
     <Link href="/">← All pace groups</Link><h2>Group {group.number} · {group.name}</h2>
     <p>{group.paceLabel} · {group.distanceLabel ?? "Distance to be confirmed"}</p>
     <p><strong>Leader:</strong> {memberName(snapshot, group.leaderId)} · <strong>Sweeper:</strong> {memberName(snapshot, group.sweeperId)}</p>
-    <h3>Route</h3><p className="route">{group.routeDescription || "Route not yet provided."}</p>
+    <h3>Route</h3><p className="route">{group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "Route not yet provided."}</p>
     <h3>Confirmed runners · {confirmed.length}/{group.capacity}</h3>
     <ul className="roster">{confirmed.map(b => <li key={b.id}>{memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
     <h3>Waitlist · {queue.length}</h3>
@@ -190,7 +191,7 @@ function RouteEditor({ run, group, mutate, pending }: { run: Run; group: Group; 
   const [route, setRoute] = useState(group.routeDescription ?? "");
   return <form onSubmit={e => { e.preventDefault(); void mutate("updateRoute", { runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version, routeDescription: route }); }}>
     <label htmlFor={`route-${group.id}`}>Group {group.number} route</label>
-    <textarea id={`route-${group.id}`} required minLength={3} maxLength={4000} value={route} onChange={e => setRoute(e.target.value)} rows={3} />
+    <textarea className="route-input" id={`route-${group.id}`} required minLength={3} maxLength={4000} value={route} onChange={e => setRoute(e.target.value)} rows={2} />
     <button disabled={pending || ["cancelled", "archived"].includes(run.status) || new Date(run.startsAt) <= new Date()}>Save route</button>
   </form>;
 }
