@@ -263,6 +263,43 @@ describe("membership-restricted authentication", () => {
     vi.stubEnv("NEXTAUTH_URL", "");
     expect(getAuthAvailability()).toEqual({ google: false, email: false });
   });
+  it.each([
+    "NEXTAUTH_URL", "NEXTAUTH_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_SHEET_ID", "GOOGLE_SERVICE_ACCOUNT_JSON", "APPS_SCRIPT_GATEWAY_URL",
+    "APPS_SCRIPT_GATEWAY_SECRET",
+  ])("diagnoses missing %s without logging values or repeating warnings", async (name) => {
+    const { getAuthAvailability } = await import("./auth");
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(getAuthAvailability().google).toBe(true);
+      expect(spy).not.toHaveBeenCalled();
+      vi.stubEnv(name, "");
+      expect(getAuthAvailability().google).toBe(false);
+      expect(getAuthAvailability().google).toBe(false);
+      expect(spy.mock.calls).toEqual([[
+        `Google sign-in is not configured (missing or empty: ${name}).`,
+      ]]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it.each([
+    "http://localhost:3000", "club.example.org", '"https://club.example.org"',
+    "https://private-user:private-password@club.example.org",
+  ])("diagnoses invalid production URL %s without logging its value", async (url) => {
+    const { getAuthAvailability } = await import("./auth");
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("NEXTAUTH_URL", url);
+      expect(getAuthAvailability().google).toBe(false);
+      expect(spy.mock.calls).toEqual([[
+        "Google sign-in is not configured (NEXTAUTH_URL must be an absolute HTTP(S) URL without credentials and use HTTPS in production).",
+      ]]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it("requires verified TLS for production SMTP and rejects non-SMTP or option-bearing URLs", async () => {
     const { smtpTransportOptions, getAuthAvailability } = await import("./auth");
     expect(smtpTransportOptions("smtp://mail.example.org", true)).toMatchObject({
