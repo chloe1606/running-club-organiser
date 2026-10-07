@@ -8,6 +8,7 @@ export function CancelRun({ runId, runVersion, mutate, pending }: {
   const [reason, setReason] = useState("");
   return <details className="cancel-disclosure">
     <summary>Cancel this week</summary>
+    <p className="hint">Cancelled weeks remain cancelled permanently so the cancellation reason and history are preserved.</p>
     <form className="cancel-form" onSubmit={e => { e.preventDefault(); void mutate("cancelRun", { runId, runVersion, cancellationReason: reason }); }}>
       <label htmlFor={`reason-${runId}`}>Cancellation reason (visible to runners)</label>
       <textarea id={`reason-${runId}`} minLength={3} required value={reason} onChange={e => setReason(e.target.value)} />

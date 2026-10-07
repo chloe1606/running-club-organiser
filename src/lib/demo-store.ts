@@ -1,7 +1,7 @@
 import { createDemoSnapshot, demoPersonas } from "./demo-data";
 import { assertCanBook, assertCanPublish, bookingCapacity, bookingIsOpen, confirmedCount, nextBookingStatus, promoteFirstWaitlisted, type Group, type Run } from "./domain";
 import type { PlatformSnapshot } from "./platform-types";
-import { createRunSchedule } from "./schedule";
+import { clubDate, createRunSchedule, nextTuesdayDate, publicationBlockers, sundayPublicationAt, updateRunTime } from "./schedule";
 import { GatewayError } from "./gateway";
 import { DEFAULT_LOCATION_MAPS } from "./locations";
 
@@ -41,6 +41,49 @@ export function mutateDemo(operation: string, payload: Record<string, unknown>, 
     if (error instanceof GatewayError) throw error;
     throw new GatewayError(error instanceof Error ? error.message : "Invalid demonstration request.", 400, "DEMO_RULE");
   }
+}
+
+function weeklyAutomation(next: PlatformSnapshot, now: Date, actorId: string) {
+  if (!next.config.weeklyAutomationEnabled) return;
+  const audit = (action: string, run: Run) => {
+    const requestId = crypto.randomUUID();
+    next.audit.unshift({ id: `demo-audit-${requestId}`, actorId, runId: run.id, action, at: now.toISOString(), requestId });
+  };
+  const date = nextTuesdayDate(now, next.config.timeZone);
+  let run = next.weeks.find(week => clubDate(new Date(week.startsAt), next.config.timeZone) === date);
+  if (!run) {
+    const location = next.config.location;
+    run = { id: `demo-run-${date}`, ...createRunSchedule(date, now, next.config), location,
+      ...(next.config.locationMaps?.[location] ? { mapsUrl: next.config.locationMaps[location] } : {}), status: "draft", version: 1 };
+    next.weeks.push(run);
+    for (const definition of createDemoSnapshot(now).groups.slice(0, 13)) {
+      next.groups.push({ id: `${run.id}-group-${definition.number}`, runId: run.id, number: definition.number, name: definition.name,
+        paceLabel: definition.paceLabel, distanceLabel: definition.distanceLabel, capacity: definition.capacity,
+        routeDescription: "", routeNeedsReview: false, version: 1 });
+    }
+    audit("createWeek", run);
+  }
+  const publication = sundayPublicationAt(run, next.config);
+  const localDate = clubDate(now, next.config.timeZone);
+  const archiveSunday = new Date(`${localDate}T12:00:00Z`);
+  const sundayOffset = archiveSunday.getUTCDay();
+  const localTime = new Intl.DateTimeFormat("en-GB", { timeZone: next.config.timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
+  archiveSunday.setUTCDate(archiveSunday.getUTCDate() - sundayOffset - (sundayOffset === 0 && localTime < (next.config.weeklyPublishTime ?? "18:00") ? 7 : 0));
+  const sunday = archiveSunday.toISOString().slice(0, 10);
+  for (const week of next.weeks.filter(week => week.status === "published" && clubDate(new Date(week.startsAt), next.config.timeZone) < sunday)) {
+    week.status = "archived"; week.version++; audit("archiveRun", week);
+  }
+  if (now < new Date(publication)) return;
+  if (run.status === "draft" && !publicationBlockers(next, run, now).length && Date.parse(run.bookingClosesAt) > now.getTime()) {
+    assertCanPublish(run, next.weeks, now);
+    run.status = "published"; run.version++; audit("publishRun", run);
+  }
+}
+
+export function runDemoWeeklyAutomation(now = new Date()): void {
+  const next = structuredClone(enabled());
+  weeklyAutomation(next, now, "weekly-automation");
+  store = next;
 }
 
 function applyMutation(operation: string, payload: Record<string, unknown>, persona?: string): PlatformSnapshot {
@@ -130,6 +173,22 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     group!.version++;
   };
   switch (operation) {
+    case "updateWeeklyAutomation": {
+      requireAdmin();
+      if (payload.configVersion !== (next.config.version ?? 1)) throw new GatewayError("Club settings changed. Refresh and try again.", 409, "STALE_VERSION");
+      if (typeof payload.enabled !== "boolean" || typeof payload.publishTime !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(payload.publishTime)) throw new Error("Supply an enabled flag and Sunday publication time as HH:mm.");
+      next.config.weeklyAutomationEnabled = payload.enabled;
+      next.config.weeklyPublishTime = payload.publishTime;
+      next.config.version = (next.config.version ?? 1) + 1;
+      weeklyAutomation(next, now, actorId);
+      break;
+    }
+    case "updateWeekTime": {
+      requireAdmin(); requireRun();
+      Object.assign(run!, updateRunTime(run!, String(payload.startTime ?? ""), next.config, now));
+      run!.version++;
+      break;
+    }
     case "cancelGroup": {
       requireGroup();
       if (!admin && (!actor.roles.includes("leader") || group!.leaderId !== actorId)) throw new GatewayError("Assigned leader access required.", 403, "FORBIDDEN");
@@ -166,6 +225,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
         throw new Error("Use valid Google Maps HTTPS links for saved venues.");
       }
       next.config.locationMaps = locationMaps;
+      next.config.version = (next.config.version ?? 1) + 1;
       break;
     }
     case "updateWeekLocation": {

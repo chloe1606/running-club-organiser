@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { clubDate, clubDateTime, createRunSchedule, nextTuesdayDate } from "./schedule";
+import { clubDate, clubDateTime, createRunSchedule, nextTuesdayDate, updateRunTime } from "./schedule";
 
 describe("club-local Tuesday scheduling", () => {
+  it("does not cumulatively shrink published windows when time changes back and forth", () => {
+    const config = { location: "Club", timeZone: "Europe/London", startTime: "19:00", demoConfiguration: false };
+    const now = new Date("2026-08-01T12:00:00Z");
+    const run = { id: "week", status: "published" as const, version: 1, ...createRunSchedule("2026-08-04", now, config) };
+    Object.assign(run, updateRunTime(run, "20:00", config, now));
+    Object.assign(run, updateRunTime(run, "19:00", config, now));
+    expect(run.bookingClosesAt).toBe("2026-08-04T17:30:00.000Z");
+    Object.assign(run, updateRunTime(run, "18:00", config, now));
+    expect(run.bookingClosesAt).toBe("2026-08-04T16:30:00.000Z");
+    Object.assign(run, updateRunTime(run, "20:00", config, now));
+    expect(run.bookingClosesAt).toBe("2026-08-04T16:30:00.000Z");
+    expect(() => updateRunTime({ ...run, status: "draft" }, "00:05", config, now)).toThrow("valid booking window");
+  });
   it("uses London daylight saving, including both transition weeks", () => {
     expect(clubDateTime("2026-03-24", "18:30")).toBe("2026-03-24T18:30:00.000Z");
     expect(clubDateTime("2026-03-31", "18:30")).toBe("2026-03-31T17:30:00.000Z");

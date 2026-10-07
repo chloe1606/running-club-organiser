@@ -205,6 +205,71 @@ function migrateLegacyPlatform() {
   });
 }
 
+function importWeeklyLeaders() {
+  return withLock_(() => {
+    const state = loadPlatformState_();
+    if (state.schemaVersion !== 1) fail_("MIGRATION_REQUIRED", "Initialize or migrate the workbook first.");
+    const email = normalizeEmail_(Session.getEffectiveUser().getEmail());
+    const actor = state.snapshot.members.find((member) => member.email === email && member.active && member.roles.includes("admin"));
+    if (!actor) fail_("FORBIDDEN", "An active administrator must import weekly leaders.");
+    const candidate = JSON.parse(JSON.stringify(state));
+    const result = importWeeklyLeaders_(candidate, actor, new Date());
+    if (!result.imported) return result;
+    commitPlatformState_(candidate);
+    return Object.assign({}, result, { projectionPending: !repairProjections_(candidate) });
+  });
+}
+
+function importWeeklyLeaders_(candidate, actor, now) {
+    if (!actor.roles.includes("admin")) fail_("FORBIDDEN", "An active administrator must import weekly leaders.");
+    const spreadsheet = platformSpreadsheet_();
+    const sheet = spreadsheet.getSheetByName("WeeklyLeaders");
+    if (!sheet) fail_("INVALID_ASSIGNMENT", "Create WeeklyLeaders with headers Run Date, Group, Leader Name.");
+    const headers = sheet.getDataRange().getValues()[0];
+    if (headers.length !== 3 || headers.some((header, index) => header !== ["Run Date", "Group", "Leader Name"][index])) {
+      fail_("INVALID_ASSIGNMENT", "WeeklyLeaders requires exactly these headers: Run Date, Group, Leader Name.");
+    }
+    const seen = new Set();
+    let imported = 0;
+    records_("WeeklyLeaders").forEach((entry) => {
+      try {
+        const date = entry["Run Date"] instanceof Date
+          ? clubLocalDate_(entry["Run Date"], candidate.snapshot.config.timeZone)
+          : String(entry["Run Date"] || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail_("INVALID_DATE", "Run Date must be YYYY-MM-DD or a date cell.");
+        const run = candidate.snapshot.weeks.find((week) => clubLocalDate_(new Date(week.startsAt), candidate.snapshot.config.timeZone) === date);
+        if (!run) fail_("NOT_FOUND", "Create the run week before importing its leaders.");
+        assertFutureRun_(run, now);
+        const group = candidate.snapshot.groups.find((item) => item.runId === run.id && item.number === Number(entry.Group));
+        if (!group || group.cancelled) fail_("INVALID_ASSIGNMENT", "Choose an existing group that is running.");
+        const key = run.id + ":" + group.id;
+        if (seen.has(key)) fail_("INVALID_ASSIGNMENT", "Each group may appear only once per run date.");
+        seen.add(key);
+        const leaderName = String(entry["Leader Name"] || "").trim().replace(/\s+/g, " ").toLowerCase();
+        const matches = candidate.snapshot.members.filter((item) => item.name.trim().replace(/\s+/g, " ").toLowerCase() === leaderName);
+        if (matches.length > 1) fail_("INVALID_ASSIGNMENT", "Leader Name is ambiguous. Make member full names unique before importing.");
+        const member = matches[0];
+        if (!member || !member.active || !member.roles.includes("leader")) fail_("INVALID_ASSIGNMENT", "Leader Name must match an active member with the leader role.");
+        if (group.leaderId === member.id) return;
+        mutatePlatform_(candidate.snapshot, {
+          operation: "assignLeader", runId: run.id, groupId: group.id, memberId: member.id,
+          runVersion: run.version, groupVersion: group.version, requestId: Utilities.getUuid(),
+        }, actor, now, candidate.groupDefinitions);
+        imported++;
+      } catch (error) {
+        if (error.platformCode) fail_(error.platformCode, "WeeklyLeaders row " + entry._row + ": " + error.message);
+        throw error;
+      }
+    });
+    validatePlatform_(candidate.snapshot);
+    if (!imported) return { imported: 0 };
+    const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-leader-import backup " + now.toISOString());
+    if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
+    candidate.leaderImport = { backupId: backup.getId(), at: now.toISOString(), actorId: actor.id };
+    protectPlatformSheet_(sheet);
+    return { imported };
+}
+
 /**
  * Owner-only setup, never dispatched via HTTP. Edit PLATFORM_CONFIG in this
  * script and the protected Groups master rows, then run this manually. Copy
@@ -231,7 +296,7 @@ function confirmClubConfiguration() {
     const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-configuration backup " + new Date().toISOString());
     if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
     state.groupDefinitions = definitions;
-    state.snapshot.config = Object.assign({}, PLATFORM_CONFIG, { demoConfiguration: false });
+    state.snapshot.config = Object.assign({}, state.snapshot.config, PLATFORM_CONFIG, { demoConfiguration: false, version: (state.snapshot.config.version || 1) + 1 });
     state.snapshot.config.locations = clubLocationOptions_(state.snapshot.config);
     state.configuration = { backupId: backup.getId(), at: new Date().toISOString(), actorId: admin.id };
     state.snapshot.audit.push({
@@ -272,13 +337,21 @@ function configureClubPlatform() {
           if (Object.prototype.hasOwnProperty.call(settings, key)) fail_("INVALID_CONFIGURATION", "Configuration setting names must be unique.");
           settings[key] = entry.Value;
         });
-        const config = {
+        const config = Object.assign({}, state.snapshot.config, {
           location: String(settings.Location || "").trim(), timeZone: String(settings["Time Zone"] || "").trim(),
           startTime: normalizeClubTime_(settings["Start Time"]),
           demoConfiguration: String(settings["Demo Configuration"]).toUpperCase() !== "FALSE",
-        };
+          version: (state.snapshot.config.version || 1) + 1,
+        });
         config.locations = clubLocationOptions_(Object.assign({}, state.snapshot.config, config));
         validateConfirmedClubConfiguration_(config, definitions);
+        const userSheet = platformSpreadsheet_().getSheetByName("UserSetup");
+        const userHeaders = userSheet && userSheet.getDataRange().getValues()[0];
+        const expectedHeaders = ["Email", "Name", "Role", "User ID", "Active", "Version"];
+        if (!userHeaders || userHeaders.length !== expectedHeaders.length ||
+            userHeaders.some((header, index) => header !== expectedHeaders[index])) {
+          fail_("INVALID_MEMBER", "UserSetup requires exactly these headers: Email, Name, Role, User ID, Active, Version.");
+        }
         const roster = records_("UserSetup").map((entry) => {
           const active = String(entry.Active).toUpperCase();
           if (!["TRUE", "FALSE"].includes(active)) fail_("INVALID_MEMBER", "Each UserSetup row requires a TRUE or FALSE Active flag.");
@@ -457,6 +530,11 @@ function isoValue_(value) {
 }
 
 function validatePlatform_(snapshot) {
+  if ((snapshot.config.weeklyAutomationEnabled !== undefined && typeof snapshot.config.weeklyAutomationEnabled !== "boolean") ||
+      (snapshot.config.weeklyPublishTime !== undefined && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(snapshot.config.weeklyPublishTime)) ||
+      (snapshot.config.version !== undefined && (!Number.isInteger(snapshot.config.version) || snapshot.config.version < 1))) {
+    fail_("INVALID_CONFIGURATION", "Invalid weekly automation settings.");
+  }
   const unique = (entries, label) => {
     const ids = new Set();
     entries.forEach((entry) => {
@@ -587,6 +665,9 @@ function projectPlatform_(state) {
     ["Start Time", snapshot.config.startTime], ["Demo Configuration", snapshot.config.demoConfiguration],
     ["Available Locations", JSON.stringify(clubLocationOptions_(snapshot.config))],
     ["Location Maps", JSON.stringify(snapshot.config.locationMaps || {})],
+    ["Weekly Automation Enabled", snapshot.config.weeklyAutomationEnabled || false],
+    ["Sunday Publication Time", snapshot.config.weeklyPublishTime || "18:00"],
+    ["Configuration Version", snapshot.config.version || 1],
   ]);
   snapshot.weeks.forEach((week) => {
     const bookings = snapshot.bookings.filter((entry) => entry.runId === week.id).map((entry) => {
@@ -633,6 +714,12 @@ function setProjectionValues_(sheet, row, column, values) {
   sheet.getRange(row, column, values.length, width).setValues(safe);
 }
 function protectPlatformSheet_(sheet) {
+  if (["UserSetup", "WeeklyLeaders"].includes(sheet.getName())) {
+    sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET)
+      .filter((entry) => entry.getDescription() === "Platform managed — edit through the application")
+      .forEach((entry) => entry.remove());
+    return;
+  }
   let protection = sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).find((entry) => entry.getDescription() === "Platform managed — edit through the application");
   if (!protection) protection = sheet.protect().setDescription("Platform managed — edit through the application");
   protection.setWarningOnly(false);
@@ -642,6 +729,19 @@ function protectPlatformSheet_(sheet) {
   const editors = protection.getEditors().filter((editor) => normalizeEmail_(editor.getEmail()) !== ownerEmail);
   if (editors.length) protection.removeEditors(editors);
   if (protection.canDomainEdit()) protection.setDomainEdit(false);
+}
+function unlockClubInputSheets() {
+  return withLock_(() => {
+    const state = loadPlatformState_();
+    const email = normalizeEmail_(Session.getEffectiveUser().getEmail());
+    if (!state.snapshot.members.some((member) => member.email === email && member.active && member.roles.includes("admin"))) {
+      fail_("FORBIDDEN", "An active administrator must unlock input sheets.");
+    }
+    ["UserSetup", "WeeklyLeaders"].forEach((name) => {
+      const sheet = platformSpreadsheet_().getSheetByName(name);
+      if (sheet) protectPlatformSheet_(sheet);
+    });
+  });
 }
 function weeklySheetName_(runId) {
   return "Week_" + String(runId).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);

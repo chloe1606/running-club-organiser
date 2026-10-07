@@ -31,6 +31,9 @@ export interface AuditEvent {
 }
 
 export interface ClubConfig {
+  version?: number;
+  weeklyAutomationEnabled?: boolean;
+  weeklyPublishTime?: string;
   location: string;
   locations?: string[];
   locationMaps?: Record<string, string>;

@@ -52,14 +52,20 @@ class Sheet {
   }
   hideSheet() { this.hidden = true; }
   setName(name: string) { this.owner.sheets.delete(this.name); this.name = name; this.owner.sheets.set(name, this); }
-  getProtections() { return []; }
+  getName() { return this.name; }
+  protections: { getDescription: () => string; remove: () => void }[] = [];
+  getProtections() { return this.protections; }
   protect() {
     this.protected = true;
+    let description = "";
     const protection = {
-      setDescription: () => protection, setWarningOnly: () => protection,
+      getDescription: () => description,
+      remove: () => { this.protections = this.protections.filter(entry => entry !== protection); this.protected = this.protections.length > 0; },
+      setDescription: (value: string) => { description = value; return protection; }, setWarningOnly: () => protection,
       addEditor: () => protection, getEditors: () => [], removeEditors: () => protection,
       canDomainEdit: () => false, setDomainEdit: () => protection,
     };
+    this.protections.push(protection);
     return protection;
   }
 }
@@ -106,16 +112,31 @@ function booking(id: string, memberId: string, groupId = "g1", status: Booking["
 }
 function requestId(number: number) { return `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`; }
 interface Reply { ok: boolean; code?: string; data?: Record<string, unknown> & PlatformSnapshot; }
-function harness(snapshot?: PlatformSnapshot) {
+function harness(snapshot?: PlatformSnapshot, initialClock = now) {
+  let clockValue = initialClock;
+  class TestClock extends Clock {
+    constructor(value?: string | number | Date) { super(value === undefined ? clockValue : value); }
+    static now() { return Date.parse(clockValue); }
+  }
+  Object.defineProperty(TestClock, Symbol.hasInstance, { value: (value: unknown) => value instanceof Date });
   const workbook = new Workbook();
   let locked = false;
   let secret: string | null = "test-gateway";
   let spreadsheetId: string | null = "club-workbook";
   let flushFailure = false;
   let sequence = 0;
+  const triggers: { getHandlerFunction: () => string }[] = [];
   const user = { getEmail: () => "admin@example.org" };
   const context = createContext({
-    Date: Clock, Set, JSON, Math, Number, String, Object, Array, Error,
+    Date: TestClock, Set, JSON, Math, Number, String, Object, Array, Error,
+    ScriptApp: {
+      getProjectTriggers: () => triggers,
+      deleteTrigger: (trigger: typeof triggers[number]) => triggers.splice(triggers.indexOf(trigger), 1),
+      newTrigger: (name: string) => ({ timeBased: () => ({ everyMinutes: (minutes: number) => ({ create: () => {
+        expect(minutes).toBe(15);
+        triggers.push({ getHandlerFunction: () => name });
+      } }) }) }),
+    },
     PropertiesService: { getScriptProperties: () => ({
       getProperty: (key: string) => key === "GATEWAY_SECRET" ? secret : key === "SPREADSHEET_ID" ? spreadsheetId : null,
     }) },
@@ -170,13 +191,286 @@ function harness(snapshot?: PlatformSnapshot) {
     runId: "run", groupId: "g1", runVersion: 1, groupVersion: 1, memberVersion: 1, ...overrides,
   });
   return {
-    workbook, post, state, canonical, mutate, context,
+    workbook, post, state, canonical, mutate, context, triggers,
+    setNow: (value: string) => { clockValue = value; },
     configureSecret: (value: string | null) => { secret = value; },
     configureSpreadsheet: (value: string | null) => { spreadsheetId = value; },
     loseFlush: () => { flushFailure = true; },
     isLocked: () => locked,
   };
 }
+
+describe("weekly automation", () => {
+  function ready(date = "2026-08-04", start = "2026-08-04T18:00:00Z", cutoff = "2026-08-04T17:30:00Z") {
+    const snapshot = fixture();
+    snapshot.config.weeklyAutomationEnabled = true;
+    Object.assign(snapshot.weeks[0], { id: "run-" + date, status: "draft", startsAt: start, bookingClosesAt: cutoff });
+    snapshot.groups.forEach(group => { group.runId = snapshot.weeks[0].id; if (group.number !== 1) group.cancelled = true; });
+    return snapshot;
+  }
+
+  it("publishes at Sunday 18:00 London and archives last Tuesday without inventing attendance", () => {
+    const snapshot = ready();
+    snapshot.weeks.push({ ...snapshot.weeks[0], id: "previous", status: "published", startsAt: "2026-07-28T18:00:00Z", bookingClosesAt: "2026-07-28T17:30:00Z", bookingOpensAt: "2026-07-20T12:00:00Z" });
+    snapshot.groups.push({ ...snapshot.groups[0], id: "previous-group", runId: "previous" });
+    snapshot.bookings.push({ ...booking("old-booking", "one", "previous-group"), runId: "previous" });
+    const app = harness(snapshot, "2026-08-02T16:59:59Z");
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().weeks.map(week => week.status)).toEqual(["draft", "published"]);
+    app.setNow("2026-08-02T17:00:00Z");
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().weeks.map(week => week.status)).toEqual(["published", "archived"]);
+    expect(app.state().bookings).toEqual(snapshot.bookings);
+    expect(app.state().attendance).toEqual([]);
+    expect(app.state().audit.map(event => event.action)).toEqual(["archiveRun", "publishRun"]);
+    expect(app.state().audit.every(event => event.actorId === "weekly-automation")).toBe(true);
+    const committed = app.canonical();
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.canonical()).toEqual(committed);
+  });
+
+  it.each([
+    ["2026-03-31", "2026-03-29T17:00:00Z", "2026-03-31T18:00:00Z", "2026-03-31T17:30:00Z"],
+    ["2026-10-27", "2026-10-25T18:00:00Z", "2026-10-27T19:00:00Z", "2026-10-27T18:30:00Z"],
+  ])("publishes across DST for %s", (date, clock, start, cutoff) => {
+    const snapshot = ready(date, start, cutoff);
+    snapshot.weeks[0].bookingOpensAt = "2026-01-01T00:00:00Z";
+    const app = harness(snapshot, clock);
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().weeks[0].status).toBe("published");
+  });
+
+  it("keeps blocked drafts and respects single future publication until a later tick", () => {
+    const snapshot = ready();
+    snapshot.groups[1].cancelled = false;
+    const app = harness(snapshot, "2026-08-02T17:00:00Z");
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().weeks[0].status).toBe("draft");
+    expect(app.mutate({ operation: "cancelGroup", email: "admin@example.org", runId: snapshot.weeks[0].id,
+      groupId: "g2", reason: "no-leader" }).ok).toBe(true);
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().weeks[0].status).toBe("published");
+    const conflict = ready();
+    conflict.weeks.push({ ...conflict.weeks[0], id: "other", status: "published", startsAt: "2026-08-11T18:00:00Z" });
+    conflict.groups.push({ ...conflict.groups[0], id: "other-group", runId: "other" });
+    const competing = harness(conflict, "2026-08-02T17:00:00Z");
+    runInContext("runWeeklyAutomation()", competing.context);
+    expect(competing.state().weeks[0].status).toBe("draft");
+  });
+
+  it("requires admin settings, checks versions, prepares immediately, and replays atomically", () => {
+    const app = harness(fixture());
+    const request = { operation: "updateWeeklyAutomation", enabled: true, publishTime: "18:00", configVersion: 1 };
+    expect(app.mutate(request)).toMatchObject({ ok: false, code: "FORBIDDEN" });
+    expect(app.mutate({ ...request, email: "admin@example.org", configVersion: 9 })).toMatchObject({ ok: false, code: "STALE_VERSION" });
+    expect(app.mutate({ ...request, email: "admin@example.org" }).ok).toBe(true);
+    expect(app.state().config).toMatchObject({ weeklyAutomationEnabled: true, weeklyPublishTime: "18:00", version: 2 });
+    expect(app.state().weeks).toHaveLength(2);
+    const committed = app.canonical();
+    expect(app.mutate({ ...request, email: "admin@example.org" }).ok).toBe(true);
+    expect(app.canonical()).toEqual(committed);
+    const unavailable = harness(fixture());
+    unavailable.workbook.rejectCommit = true;
+    expect(unavailable.mutate({ ...request, email: "admin@example.org" }).ok).toBe(false);
+    expect(unavailable.state().config.weeklyAutomationEnabled).toBeUndefined();
+    expect(unavailable.state().weeks).toHaveLength(1);
+    expect(unavailable.isLocked()).toBe(false);
+  });
+
+  it("installs one independent 15-minute trigger without enabling automation", () => {
+    const app = harness(fixture());
+    runInContext("installWeeklyAutomationTrigger()", app.context);
+    runInContext("installWeeklyAutomationTrigger()", app.context);
+    expect(app.triggers).toHaveLength(1);
+    expect(app.state().config.weeklyAutomationEnabled).toBeUndefined();
+  });
+
+  it("preserves published cutoffs, versions and bookings when the start changes", () => {
+    const snapshot = fixture();
+    snapshot.bookings.push(booking("existing", "one"));
+    const app = harness(snapshot);
+    expect(app.mutate({ operation: "updateWeekTime", startTime: "20:00" })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+    expect(app.mutate({ operation: "updateWeekTime", email: "admin@example.org", startTime: "20:00", runVersion: 2 })).toMatchObject({ ok: false, code: "STALE_VERSION" });
+    expect(app.mutate({ operation: "updateWeekTime", email: "admin@example.org", startTime: "20:00" }).ok).toBe(true);
+    expect(app.state().weeks[0]).toMatchObject({ startsAt: "2026-08-11T19:00:00.000Z", bookingClosesAt: new Date(snapshot.weeks[0].bookingClosesAt).toISOString(), version: 2 });
+    expect(app.state().bookings).toEqual(snapshot.bookings);
+    app.setNow("2026-08-11T16:45:00Z");
+    expect(app.mutate({ operation: "updateWeekTime", email: "admin@example.org", startTime: "21:00", runVersion: 2, requestId: requestId(2) }).ok).toBe(true);
+    expect(app.state().weeks[0].bookingClosesAt).toBe(new Date(snapshot.weeks[0].bookingClosesAt).toISOString());
+    expect(app.mutate({ operation: "updateWeekTime", email: "admin@example.org", startTime: "16:00", runVersion: 3, requestId: requestId(3) })).toMatchObject({ ok: false, code: "INVALID_DATE" });
+  });
+
+  it("prepares a fresh Tuesday draft once without copying occupants or routes", () => {
+    const snapshot = fixture();
+    Object.assign(snapshot.config, { weeklyAutomationEnabled: true });
+    snapshot.bookings.push(booking("existing", "one"));
+    const app = harness(snapshot);
+    runInContext("runWeeklyAutomation()", app.context);
+    const run = app.state().weeks.find(week => week.id === "run-2026-08-04")!;
+    expect(run.status).toBe("draft");
+    expect(app.state().groups.filter(group => group.runId === run.id)).toHaveLength(13);
+    expect(app.state().groups.filter(group => group.runId === run.id).every(group => !group.leaderId && !group.sweeperId && !group.routeDescription)).toBe(true);
+    expect(app.state().bookings.filter(entry => entry.runId === run.id)).toEqual([]);
+    const committed = app.canonical();
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.canonical()).toEqual(committed);
+  });
+
+  it("does not change lifecycle from snapshot reads or while disabled", () => {
+    const app = harness(fixture());
+    app.post({ operation: "snapshot" });
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().weeks).toHaveLength(1);
+  });
+});
+
+describe("weekly leader worksheet import", () => {
+  it("unlocks only managed input-tab protections and retains protected data tabs", () => {
+    const app = harness(fixture());
+    app.workbook.getSheetByName("_PlatformState")!.protect().setDescription("Platform managed — edit through the application");
+    const users = app.workbook.insertSheet("UserSetup");
+    const leaders = app.workbook.insertSheet("WeeklyLeaders");
+    users.protect().setDescription("Platform managed — edit through the application");
+    leaders.protect().setDescription("Platform managed — edit through the application");
+    leaders.protect().setDescription("Owner custom protection");
+    runInContext("unlockClubInputSheets()", app.context);
+    expect(users.protected).toBe(false);
+    expect(leaders.getProtections().map(entry => entry.getDescription())).toEqual(["Owner custom protection"]);
+    app.post({ operation: "snapshot" });
+    expect(users.protected).toBe(false);
+    expect(app.workbook.getSheetByName("Users")?.protected).toBe(true);
+    expect(app.workbook.getSheetByName("_PlatformState")?.protected).toBe(true);
+  });
+  function staged(rows: Cell[][]) {
+    const snapshot = fixture();
+    snapshot.members.find(member => member.id === "one")!.roles.push("leader");
+    const app = harness(snapshot);
+    app.workbook.insertSheet("WeeklyLeaders").cells = [["Run Date", "Group", "Leader Name"], ...rows];
+    return app;
+  }
+
+  it("imports future weekly assignments with confirmed places and is repeat-safe", () => {
+    const app = staged([["2026-08-11", 2, " oNe "]]);
+    expect(runInContext("importWeeklyLeaders()", app.context)).toMatchObject({ imported: 1 });
+    expect(app.state().groups.find(group => group.id === "g2")?.leaderId).toBe("one");
+    expect(app.state().bookings).toContainEqual(expect.objectContaining({
+      memberId: "one", groupId: "g2", status: "confirmed", source: "assignment",
+    }));
+    expect(app.state().audit).toContainEqual(expect.objectContaining({ actorId: "admin", action: "assignLeader" }));
+    expect(app.workbook.backups).toBe(1);
+    expect(app.workbook.getSheetByName("WeeklyLeaders")?.protected).toBe(false);
+    const committed = app.canonical();
+    expect(runInContext("importWeeklyLeaders()", app.context)).toMatchObject({ imported: 0 });
+    expect(app.canonical()).toEqual(committed);
+    expect(app.workbook.backups).toBe(1);
+    expect(app.isLocked()).toBe(false);
+  });
+
+  it("accepts date cells in the club timezone and leaves unlisted groups unchanged", () => {
+    const app = staged([[new Clock("2026-08-10T23:00:00Z"), 2, "One"]]);
+    runInContext("importWeeklyLeaders()", app.context);
+    expect(app.state().groups[0].leaderId).toBe("leader");
+    expect(app.state().groups[1].leaderId).toBe("one");
+  });
+
+  it.each([
+    ["2026-08-11", 3, "Two"],
+    ["2026-08-11", 2, "One"],
+    ["2026-08-11", 3, "Leader"],
+    ["2026-08-11", 99, "One"],
+    ["2026-08-18", 3, "One"],
+    ["2026-08-11", 3, ""],
+  ])("rejects invalid row %j without committing earlier rows", (...row) => {
+    const app = staged([["2026-08-11", 2, "One"], row]);
+    const before = app.canonical();
+    expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow("WeeklyLeaders row 3:");
+    expect(app.canonical()).toEqual(before);
+    expect(app.workbook.backups).toBe(0);
+    expect(app.isLocked()).toBe(false);
+  });
+
+  it("rejects a leader booked in another group", () => {
+    const app = staged([["2026-08-11", 2, "Leader"]]);
+    expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow("already occupies");
+  });
+
+  it("rejects capacity overflow and inactive leaders", () => {
+    for (const inactive of [false, true]) {
+      const snapshot = fixture();
+      snapshot.groups[0].leaderId = undefined;
+      snapshot.members.find(member => member.id === "one")!.roles.push("leader");
+      snapshot.members.find(member => member.id === "one")!.active = !inactive;
+      if (!inactive) snapshot.bookings.push(booking("b1", "two"), booking("b2", "leader"));
+      const app = harness(snapshot);
+      app.workbook.insertSheet("WeeklyLeaders").cells = [["Run Date", "Group", "Leader Name"], ["2026-08-11", 1, "One"]];
+      const before = app.canonical();
+      expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow(inactive ? "active member" : "capacity");
+      expect(app.canonical()).toEqual(before);
+    }
+  });
+
+  it.each(["archived", "cancelled", "started", "group-cancelled"])("rejects %s weeks or groups", (status) => {
+    const snapshot = fixture();
+    if (status === "started") snapshot.weeks[0].startsAt = "2026-07-28T18:00:00Z";
+    else if (status === "group-cancelled") snapshot.groups[1].cancelled = true;
+    else snapshot.weeks[0].status = status as "archived" | "cancelled";
+    const app = harness(snapshot);
+    app.workbook.insertSheet("WeeklyLeaders").cells = [["Run Date", "Group", "Leader Name"], [status === "started" ? "2026-07-28" : "2026-08-11", 2, "Leader"]];
+    expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow();
+    expect(app.workbook.backups).toBe(0);
+  });
+
+  it("requires an active administrator for manual and HTTP imports", () => {
+    const snapshot = fixture();
+    snapshot.members[0].roles = ["runner"];
+    const app = harness(snapshot);
+    expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow("active administrator");
+    expect(app.post({ operation: "importWeeklyLeaders", email: "one@example.org", requestId: requestId(99) })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+  });
+
+  it("imports through the authenticated gateway and replays receipts without rereading the sheet", () => {
+    const app = staged([["2026-08-11", 2, "One"]]);
+    const request = { operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(98) };
+    expect(app.post(request)).toMatchObject({ ok: true, data: { imported: 1 } });
+    expect(app.state().groups[1].leaderId).toBe("one");
+    const before = app.canonical();
+    app.workbook.getSheetByName("WeeklyLeaders")!.cells[1][2] = "Unknown Person";
+    expect(app.post(request)).toMatchObject({ ok: true, data: { imported: 1 } });
+    expect(app.canonical()).toEqual(before);
+    expect(app.workbook.backups).toBe(1);
+    expect(app.post({ ...request, requestId: requestId(97) })).toMatchObject({ ok: false, code: "INVALID_ASSIGNMENT" });
+    expect(app.canonical()).toEqual(before);
+  });
+
+  it("matches normalized full names and rejects duplicate member names atomically", () => {
+    const app = staged([["2026-08-11", 2, "  ALEX   SMITH  "]]);
+    const canonical = runInContext("loadPlatformState_()", app.context);
+    canonical.snapshot.members.find((member: { id: string }) => member.id === "one").name = "Alex Smith";
+    runInContext("commitPlatformState_", app.context)(canonical);
+    expect(app.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(96) })).toMatchObject({ ok: true });
+
+    const duplicate = staged([["2026-08-11", 2, "One"]]);
+    const duplicateState = runInContext("loadPlatformState_()", duplicate.context);
+    duplicateState.snapshot.members.find((member: { id: string }) => member.id === "two").name = " one ";
+    runInContext("commitPlatformState_", duplicate.context)(duplicateState);
+    const before = duplicate.canonical();
+    expect(duplicate.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(95) })).toMatchObject({ ok: false, message: expect.stringContaining("ambiguous") });
+    expect(duplicate.canonical()).toEqual(before);
+    expect(duplicate.workbook.backups).toBe(0);
+  });
+
+  it("validates headers and preserves canonical state when a commit fails", () => {
+    const app = staged([["2026-08-11", 2, "One"]]);
+    const sheet = app.workbook.getSheetByName("WeeklyLeaders")!;
+    sheet.cells[0][2] = "Name";
+    expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow("headers");
+    sheet.cells[0][2] = "Leader Name";
+    const before = app.canonical();
+    app.workbook.rejectCommit = true;
+    expect(() => runInContext("importWeeklyLeaders()", app.context)).toThrow("write unavailable");
+    expect(app.canonical()).toEqual(before);
+  });
+});
 
 describe("Apps Script locked gateway", () => {
   it("seeds default venues and lets admins remove an unused venue", () => {
@@ -851,6 +1145,16 @@ describe("Apps Script manual migration", () => {
     expect(app.state().groups.every((group) => group.capacity === 20)).toBe(true);
     expect(app.state().bookings[0].id).toBe("preserved");
     expect(app.canonical().groupDefinitions.every((group: { capacity: number }) => group.capacity === 19)).toBe(true);
+  });
+  it("rejects invalid UserSetup headers before saving any setup changes", () => {
+    const app = harness();
+    runInContext("initializeClubPlatform()", app.context);
+    prepareConfiguration(app);
+    app.workbook.getSheetByName("UserSetup")!.cells[0][0] = "Wrong header";
+    const before = app.canonical();
+    expect(() => runInContext("configureClubPlatform()", app.context)).toThrow("UserSetup requires exactly these headers");
+    expect(app.canonical()).toEqual(before);
+    expect(app.workbook.backups).toBe(0);
   });
   it("seeds a new live club roster and confirmed definitions after initialization", () => {
     const app = harness();

@@ -19,6 +19,12 @@ function render(snapshot: PlatformSnapshot) {
 }
 
 describe("runner group UI", () => {
+  it("gives every group a labelled number badge including double-digit groups", () => {
+    const html = render(fixture().snapshot);
+    expect(html.match(/class="group-number-label">Group<\/span>/g)).toHaveLength(13);
+    expect(html).toContain('<strong class="group-number-value">1</strong>');
+    expect(html).toContain('<strong class="group-number-value">13</strong>');
+  });
   it("renders all 13 groups with capacities, leader names and explicit availability labels", () => {
     const { snapshot } = fixture();
     const html = render(snapshot);

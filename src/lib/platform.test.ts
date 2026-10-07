@@ -25,6 +25,23 @@ beforeEach(() => { vi.stubEnv("CLUB_DEMO_MODE", "false"); });
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
 describe("server identity and role boundary", () => {
+  it("denies automation and week-time changes before contacting the gateway", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
+    await expect(executeMutation({ operation: "updateWeeklyAutomation", requestId: mutation.requestId, configVersion: 1, enabled: true, publishTime: "18:00" })).rejects.toMatchObject({ status: 403 });
+    await expect(executeMutation({ operation: "updateWeekTime", requestId: mutation.requestId, runId: "w", runVersion: 1, startTime: "20:00" })).rejects.toMatchObject({ status: 403 });
+    expect(mutateSheet).not.toHaveBeenCalled();
+  });
+  it("denies weekly leader imports for non-admins and in demo mode", async () => {
+    const intent = { operation: "importWeeklyLeaders" as const, requestId: mutation.requestId };
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
+    await expect(executeMutation(intent)).rejects.toMatchObject({ status: 403 });
+    expect(mutateSheet).not.toHaveBeenCalled();
+    vi.stubEnv("CLUB_DEMO_MODE", "true");
+    await expect(executeMutation(intent)).rejects.toThrow("unavailable in demo mode");
+    expect(mutateSheet).not.toHaveBeenCalled();
+  });
   it("requires a live session before a mutation", async () => {
     vi.mocked(getServerSession).mockResolvedValue(null);
     await expect(executeMutation(mutation)).rejects.toMatchObject({ status: 401 });

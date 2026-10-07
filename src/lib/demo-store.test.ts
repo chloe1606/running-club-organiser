@@ -26,6 +26,59 @@ async function setup() {
 }
 
 describe("isolated explicit demo", () => {
+  it("prepares drafts on an authorized enable, never on reads, and publishes/archives on a synthetic Sunday tick", async () => {
+    const { getDemoSnapshot, mutateDemo, runDemoWeeklyAutomation } = await import("./demo-store");
+    const initial = getDemoSnapshot("admin");
+    vi.setSystemTime(new Date("2026-10-07T12:00:00Z"));
+    const intent = { requestId: randomUUID(), configVersion: 1, enabled: true, publishTime: "18:00" };
+    expect(() => mutateDemo("updateWeeklyAutomation", intent, "runner")).toThrow("Administrator");
+    expect(getDemoSnapshot("admin").weeks).toEqual(initial.weeks);
+    let snapshot = mutateDemo("updateWeeklyAutomation", intent, "admin");
+    const draft = snapshot.weeks.find(week => week.status === "draft")!;
+    expect(draft.id).toBe("demo-run-2026-10-13");
+    const groups = snapshot.groups.filter(group => group.runId === draft.id);
+    expect(groups.every(group => !group.cancelled && !group.leaderId && !group.sweeperId && !group.routeDescription)).toBe(true);
+    expect(snapshot.bookings.filter(booking => booking.runId === draft.id)).toEqual([]);
+    expect(mutateDemo("updateWeeklyAutomation", intent, "admin")).toEqual(snapshot);
+    expect(() => mutateDemo("updateWeeklyAutomation", { ...intent, requestId: randomUUID() }, "admin")).toThrow("changed");
+    const before = getDemoSnapshot("admin");
+    vi.setSystemTime(new Date("2026-10-11T17:00:00Z"));
+    expect(getDemoSnapshot("admin")).toEqual(before);
+    runDemoWeeklyAutomation();
+    snapshot = getDemoSnapshot("admin");
+    expect(snapshot.weeks.find(week => week.id === initial.weeks[0].id)?.status).toBe("archived");
+    expect(snapshot.attendance).toEqual(initial.attendance);
+    expect(snapshot.bookings).toEqual(initial.bookings);
+    expect(snapshot.weeks.find(week => week.id === draft.id)?.status).toBe("draft");
+    const leader = snapshot.members.find(member => member.active && member.roles.includes("leader"))!;
+    for (const group of groups) {
+      snapshot = getDemoSnapshot("admin");
+      const week = snapshot.weeks.find(week => week.id === draft.id)!;
+      const payload = { requestId: randomUUID(), runId: week.id, runVersion: week.version, groupId: group.id, groupVersion: group.version };
+      mutateDemo(group.number === 1 ? "assignLeader" : "cancelGroup", { ...payload, ...(group.number === 1 ? { memberId: leader.id } : { reason: "no-leader" }) }, "admin");
+    }
+    runDemoWeeklyAutomation();
+    snapshot = getDemoSnapshot("admin");
+    expect(snapshot.weeks.find(week => week.id === draft.id)?.status).toBe("published");
+    expect(snapshotSchema.safeParse({ ...snapshot, demo: false }).success).toBe(true);
+    runDemoWeeklyAutomation();
+    expect(getDemoSnapshot("admin")).toEqual(snapshot);
+  });
+
+  it("changes future week times without extending published cutoffs or losing bookings", async () => {
+    const { getDemoSnapshot, mutateDemo, run, payload } = await setup();
+    const before = getDemoSnapshot("admin");
+    expect(() => mutateDemo("updateWeekTime", { ...payload(), startTime: "20:00" }, "runner")).toThrow("Administrator");
+    let snapshot = mutateDemo("updateWeekTime", { ...payload(), startTime: "20:00" }, "admin");
+    expect(snapshot.weeks.find(week => week.id === run.id)).toMatchObject({ startsAt: "2026-10-06T19:00:00.000Z", bookingClosesAt: run.bookingClosesAt });
+    expect(snapshot.bookings).toEqual(before.bookings);
+    vi.setSystemTime(new Date("2026-10-06T17:45:00Z"));
+    snapshot = mutateDemo("updateWeekTime", { ...payload(), startTime: "21:00" }, "admin");
+    expect(snapshot.weeks.find(week => week.id === run.id)?.bookingClosesAt).toBe(run.bookingClosesAt);
+    expect(() => mutateDemo("updateWeekTime", { ...payload(), startTime: "17:00" }, "admin")).toThrow("valid booking window");
+    expect(getDemoSnapshot("admin")).toEqual(snapshot);
+  });
+
   it("refuses access unless CLUB_DEMO_MODE is exactly true", async () => {
     const { getDemoSnapshot, mutateDemo } = await import("./demo-store");
     vi.stubEnv("CLUB_DEMO_MODE", "false");

@@ -1,5 +1,5 @@
 import type { Run } from "./domain";
-import type { ClubConfig } from "./platform-types";
+import type { ClubConfig, PlatformSnapshot } from "./platform-types";
 
 /** Replace these explicitly labelled demo settings with the club's agreed values. */
 export const DEMO_CLUB_CONFIG: ClubConfig = {
@@ -71,4 +71,36 @@ export function createRunSchedule(
     throw new Error("Choose a future Tuesday with a start after the booking cutoff.");
   }
   return { startsAt, bookingOpensAt: now.toISOString(), bookingClosesAt };
+}
+
+export function sundayPublicationAt(run: Run, config: ClubConfig): string {
+  const date = new Date(`${clubDate(new Date(run.startsAt), config.timeZone)}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 2);
+  return clubDateTime(date.toISOString().slice(0, 10), config.weeklyPublishTime ?? "18:00", config.timeZone);
+}
+
+export function publicationBlockers(snapshot: PlatformSnapshot, run: Run, now: Date): string[] {
+  const blockers = snapshot.groups.filter(group => group.runId === run.id && !group.cancelled)
+    .filter(group => !snapshot.members.some(member => member.id === group.leaderId && member.active && member.roles.includes("leader")))
+    .map(group => `Group ${group.number} needs an eligible leader`);
+  if (snapshot.weeks.some(week => week.id !== run.id && week.status === "published" && Date.parse(week.startsAt) > now.getTime())) {
+    blockers.push("Another future week is published");
+  }
+  if (Date.parse(run.bookingClosesAt) <= now.getTime()) blockers.push("Booking window has closed");
+  return blockers;
+}
+
+export function updateRunTime(run: Run, startTime: string, config: ClubConfig, now: Date) {
+  if (!["draft", "published"].includes(run.status) || Date.parse(run.startsAt) <= now.getTime()) throw new Error("Only future draft or published weeks can change time.");
+  const date = clubDate(new Date(run.startsAt), config.timeZone);
+  const startsAt = clubDateTime(date, startTime, config.timeZone);
+  const lead = Date.parse(run.startsAt) - Date.parse(run.bookingClosesAt);
+  const proposedClose = Date.parse(startsAt) - (run.status === "published" ? 30 * 60 * 1000 : lead);
+  const close = run.status === "published" ? Math.min(Date.parse(run.bookingClosesAt), proposedClose) : proposedClose;
+  if (!(lead > 0) || Date.parse(startsAt) <= now.getTime() || close <= Date.parse(run.bookingOpensAt) || close >= Date.parse(startsAt) ||
+      clubDate(new Date(close), config.timeZone) !== date ||
+      (Date.parse(run.bookingClosesAt) <= now.getTime() && close > now.getTime()) || (run.status === "draft" && close <= now.getTime())) {
+    throw new Error("Choose a future start with a valid booking window; closed bookings cannot reopen.");
+  }
+  return { startsAt, bookingClosesAt: new Date(close).toISOString() };
 }

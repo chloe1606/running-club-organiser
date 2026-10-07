@@ -32,6 +32,7 @@ export async function getPlatformSnapshot(): Promise<PlatformSnapshot> {
 
 export async function executeMutation(mutation: ClubMutation): Promise<PlatformSnapshot> {
   if (demoEnabled()) {
+    if (mutation.operation === "importWeeklyLeaders") throw new GatewayError("Weekly leader imports are unavailable in demo mode.", 400, "INVALID_REQUEST");
     const snapshot = mutateDemo(mutation.operation, mutation, await demoPersona());
     return visibleSnapshot(snapshot, snapshot.currentMemberId);
   }
@@ -39,7 +40,7 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
   if (!session?.user?.email) throw new GatewayError("Sign in to continue.", 401, "UNAUTHORIZED");
   const member = await findActiveMemberByEmail(session.user.email);
   if (!member) throw new GatewayError("Active club membership is required.", 403, "FORBIDDEN");
-  const adminOperations = ["moveRunner", "createWeek", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember"];
+  const adminOperations = ["moveRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "importWeeklyLeaders"];
   if (adminOperations.includes(mutation.operation) && !member.roles.split(",").map((role) => role.trim()).includes("admin")) {
     throw new GatewayError("Administrator access is required.", 403, "FORBIDDEN");
   }

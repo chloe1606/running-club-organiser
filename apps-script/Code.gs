@@ -53,7 +53,10 @@ function dispatch_(request) {
   }
   // Mutate a detached candidate. Rejections cannot remove an existing booking.
   state = JSON.parse(JSON.stringify(state));
-  const result = mutatePlatform_(state.snapshot, request, actor, new Date(), state.groupDefinitions);
+  const result = request.operation === "importWeeklyLeaders"
+    ? importWeeklyLeaders_(state, actor, new Date())
+    : mutatePlatform_(state.snapshot, request, actor, new Date(), state.groupDefinitions);
+  if (request.operation === "updateWeeklyAutomation") weeklyAutomation_(state.snapshot, state.groupDefinitions, new Date(), actor);
   validatePlatform_(state.snapshot);
   state.receipts.push({ requestId: request.requestId, actorId: actor.id, fingerprint, result });
   commitPlatformState_(state);
@@ -61,17 +64,96 @@ function dispatch_(request) {
   return response_(true, null, null, Object.assign({}, result, { projectionPending: !projected }));
 }
 
+function publicationBlockers_(snapshot, run) {
+  return snapshot.groups.filter((group) => group.runId === run.id && !group.cancelled)
+    .filter((group) => !snapshot.members.some((member) => member.id === group.leaderId && member.active && member.roles.includes("leader")))
+    .map((group) => "Group " + group.number + " needs an eligible leader");
+}
+
+function weeklyAutomation_(snapshot, groupDefinitions, now, actor) {
+  if (!snapshot.config.weeklyAutomationEnabled) return;
+  const localDate = clubLocalDate_(now, snapshot.config.timeZone);
+  const target = new Date(localDate + "T12:00:00Z");
+  const days = (2 - target.getUTCDay() + 7) % 7;
+  target.setUTCDate(target.getUTCDate() + days);
+  let date = target.toISOString().slice(0, 10);
+  if (days === 0 && Utilities.formatDate(now, snapshot.config.timeZone, "HH:mm") >= PLATFORM_BOOKING_CUTOFF) {
+    target.setUTCDate(target.getUTCDate() + 7);
+    date = target.toISOString().slice(0, 10);
+  }
+  const mutate = (request) => mutatePlatform_(snapshot, Object.assign({ requestId: Utilities.getUuid() }, request), actor, now, groupDefinitions);
+  let run = snapshot.weeks.find((week) => clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) === date);
+  if (!run) {
+    mutate({ operation: "createWeek", date });
+    run = snapshot.weeks.find((week) => week.id === "run-" + date);
+  }
+  const sunday = new Date(date + "T12:00:00Z");
+  sunday.setUTCDate(sunday.getUTCDate() - 2);
+  const sundayDate = sunday.toISOString().slice(0, 10);
+  const due = localDate > sundayDate || (localDate === sundayDate &&
+    Utilities.formatDate(now, snapshot.config.timeZone, "HH:mm") >= (snapshot.config.weeklyPublishTime || "18:00"));
+  const archiveSunday = new Date(localDate + "T12:00:00Z");
+  const sundayOffset = archiveSunday.getUTCDay();
+  archiveSunday.setUTCDate(archiveSunday.getUTCDate() - sundayOffset -
+    (sundayOffset === 0 && Utilities.formatDate(now, snapshot.config.timeZone, "HH:mm") < (snapshot.config.weeklyPublishTime || "18:00") ? 7 : 0));
+  const archiveDate = archiveSunday.toISOString().slice(0, 10);
+  snapshot.weeks.filter((week) => week.status === "published" && clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) < archiveDate)
+    .forEach((week) => mutate({ operation: "archiveRun", runId: week.id, runVersion: week.version }));
+  if (!due) return;
+  if (run.status === "draft" && new Date(run.bookingClosesAt) > now && !publicationBlockers_(snapshot, run).length &&
+      !snapshot.weeks.some((week) => week.id !== run.id && week.status === "published" && new Date(week.startsAt) > now)) {
+    mutate({ operation: "publishRun", runId: run.id, runVersion: run.version });
+  }
+}
+
+function installWeeklyAutomationTrigger() {
+  platformWorkbook_ = null;
+  return withLock_(() => {
+    const state = loadPlatformState_();
+    const email = normalizeEmail_(Session.getEffectiveUser().getEmail());
+    if (!state.snapshot.members.some((member) => member.email === email && member.active && member.roles.includes("admin"))) {
+      fail_("FORBIDDEN", "An active administrator must install the timer.");
+    }
+    const triggers = ScriptApp.getProjectTriggers().filter((trigger) => trigger.getHandlerFunction() === "runWeeklyAutomation");
+    if (!triggers.length) ScriptApp.newTrigger("runWeeklyAutomation").timeBased().everyMinutes(15).create();
+    triggers.slice(1).forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+    return { installed: true };
+  });
+}
+
+function runWeeklyAutomation() {
+  platformWorkbook_ = null;
+  return withLock_(() => {
+    const state = loadPlatformState_();
+    if (state.schemaVersion !== 1) fail_("MIGRATION_REQUIRED", "Initialize or migrate the workbook first.");
+    const candidate = JSON.parse(JSON.stringify(state));
+    weeklyAutomation_(candidate.snapshot, candidate.groupDefinitions, new Date(), { id: "weekly-automation", roles: ["admin"] });
+    validatePlatform_(candidate.snapshot);
+    if (JSON.stringify(candidate.snapshot) !== JSON.stringify(state.snapshot)) commitPlatformState_(candidate);
+    return { projectionPending: !repairProjections_(candidate) };
+  });
+}
+
 function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   const operation = request.operation;
   const admin = actor.roles.includes("admin");
-  const adminOperations = ["createWeek", "updateWeekLocation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner", "updateLocations"];
+  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner", "updateLocations"];
   if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
   let run;
   let group;
   let result = {};
   const touched = new Set();
   const auditContext = { actorId: actor.id, requestId: request.requestId, at: now.toISOString() };
-  if (operation === "createWeek") {
+  if (operation === "updateWeeklyAutomation") {
+    if (request.configVersion !== (snapshot.config.version || 1)) fail_("STALE_VERSION", "Club settings changed. Refresh and try again.");
+    if (typeof request.enabled !== "boolean" || typeof request.publishTime !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(request.publishTime)) {
+      fail_("INVALID_CONFIGURATION", "Supply an enabled flag and Sunday publication time as HH:mm.");
+    }
+    snapshot.config.weeklyAutomationEnabled = request.enabled;
+    snapshot.config.weeklyPublishTime = request.publishTime;
+    snapshot.config.version = (snapshot.config.version || 1) + 1;
+    result = { configVersion: snapshot.config.version };
+  } else if (operation === "createWeek") {
     const schedule = platformSchedule_(request.date, snapshot.config, now);
     if (snapshot.weeks.some((week) => clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) === request.date)) {
       fail_("WEEK_EXISTS", "A run already exists for this club-local date.");
@@ -127,6 +209,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       fail_("INVALID_CONFIGURATION", "Supply valid Google Maps HTTPS links for saved venues.");
     }
     snapshot.config.locationMaps = locationMaps;
+    snapshot.config.version = (snapshot.config.version || 1) + 1;
     result = { location: snapshot.config.location };
   } else if (operation === "updateMember") {
     const member = snapshot.members.find((entry) => entry.id === request.memberId);
@@ -172,7 +255,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     if (!run) fail_("NOT_FOUND", "The run does not exist.");
     expectedVersion_(run, request.runVersion);
     if (["archived", "cancelled"].includes(run.status)) fail_("RUN_CLOSED", "This run is read-only; cancelled runs retain their cancellation status.");
-    const runOperations = ["updateWeekLocation", "publishRun", "cancelRun", "archiveRun"];
+    const runOperations = ["updateWeekLocation", "updateWeekTime", "publishRun", "cancelRun", "archiveRun"];
     if (!runOperations.includes(operation)) {
       const ownBooking = operation === "leave" && !request.groupId &&
         snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === actor.id && entry.status !== "cancelled");
@@ -184,6 +267,23 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       touched.add(group.id);
     }
     switch (operation) {
+      case "updateWeekTime": {
+        if (!["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only future draft or published weeks can change time.");
+        const date = clubLocalDate_(new Date(run.startsAt), snapshot.config.timeZone);
+        const startsAt = clubInstant_(date, request.startTime, snapshot.config.timeZone);
+        const lead = Date.parse(run.startsAt) - Date.parse(run.bookingClosesAt);
+        const proposedClose = Date.parse(startsAt) - (run.status === "published" ? 30 * 60 * 1000 : lead);
+        const close = run.status === "published" ? Math.min(Date.parse(run.bookingClosesAt), proposedClose) : proposedClose;
+        if (!(lead > 0) || Date.parse(startsAt) <= now.getTime() || close <= Date.parse(run.bookingOpensAt) || close >= Date.parse(startsAt) ||
+          clubLocalDate_(new Date(close), snapshot.config.timeZone) !== date ||
+            (Date.parse(run.bookingClosesAt) <= now.getTime() && close > now.getTime()) || (run.status === "draft" && close <= now.getTime())) {
+          fail_("INVALID_DATE", "Choose a future start with a valid booking window; closed bookings cannot reopen.");
+        }
+        run.startsAt = startsAt;
+        run.bookingClosesAt = new Date(close).toISOString();
+        result = { startsAt, bookingClosesAt: run.bookingClosesAt };
+        break;
+      }
       case "cancelGroup": {
         if (!group || !["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published group can be marked not running.");
         if (group.cancelled) fail_("GROUP_CANCELLED", "This group is already marked not running.");
@@ -228,7 +328,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         result = { status: run.status };
         break;
       case "archiveRun":
-        if (new Date(run.startsAt) > now) fail_("INVALID_ARCHIVE", "Only completed runs can be archived.");
+        if (run.status !== "published" || new Date(run.startsAt) > now) fail_("INVALID_ARCHIVE", "Only completed published runs can be archived.");
         run.status = "archived";
         result = { status: run.status };
         break;

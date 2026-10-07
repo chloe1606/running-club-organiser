@@ -69,6 +69,53 @@ Keep SMTP and OAuth tokens out of logs, monitor gateway quotas and auth-record g
 
 Next.js incoming-request logging is disabled because email callback URLs carry bearer tokens; auth responses use `Referrer-Policy: no-referrer` and are not cacheable. Also configure your hosting/reverse proxy, mail provider and observability tools to omit/redact auth query strings and request bodies. Application settings cannot sanitize a separately managed proxy's access logs.
 
+## Optional weekly automation
+
+Automation is **off until an administrator enables it** in Admin > Weekly schedule. The default publication schedule is **Sunday 18:00, Europe/London**; the time is configurable in Admin and the timezone comes from the existing club configuration. Daylight-saving changes use club-local dates, not a fixed UTC offset.
+
+When enabled, the lifecycle prepares the next eligible Tuesday draft from canonical group defaults. No bookings, leader/sweeper assignments, routes or group cancellations are copied. Enabling it prepares the draft immediately in the same locked transaction; the independent timer also prepares drafts throughout the week, not only on Sunday. Existing weeks on that date, including cancelled weeks, are never recreated. After Tuesday's standard 18:30 cutoff the next Tuesday becomes eligible.
+
+At or after Sunday publication time, the timer publishes the upcoming draft only when every noncancelled group has an active eligible leader and no other future week is published. Routes are optional. Admin lists missing leaders and conflicting published weeks under Upcoming drafts, with **Publication blocked** once due. Resolve assignments or cancel groups that will not run; the next timer tick retries. Manual publication remains an explicit admin override using the existing lifecycle checks.
+
+Completed published weeks archive at their following Sunday boundary, independently of whether the next draft can publish. Delayed ticks catch up on older eligible weeks. Cancelled weeks stay cancelled; drafts are not archived. Archival retains bookings, audit and recorded attendance unchanged. Attendance is optional and unrecorded outcomes stay **unknown**, never inferred present or absent. This feature sends no reminders or email.
+
+### Owner timer setup
+
+1. Back up and verify a staging workbook first. Copy the updated three Apps Script files into the bound project, save, and update the Web App to a new deployment version. Deploy the matching Next.js changes.
+2. As the workbook owner who is also an active club administrator, run **installWeeklyAutomationTrigger()** in the Apps Script editor and authorize trigger/spreadsheet access. This installs a time-driven **runWeeklyAutomation** trigger every 15 minutes, independent of the website or anyone opening Admin. Rerunning is repeat-safe for that installing account. Install from only one owner account: Apps Script does not list other users' triggers. Check the project's Triggers page for duplicates and execution errors.
+3. Sign in as an administrator and enable Weekly automation in Admin. Keep the default Sunday 18:00 or save the agreed time. The checkbox persists canonical config with a version check, UUID receipt and audit; runner/leader and anonymous requests cannot enable it. The timer setup itself does not enable it.
+4. Review the automatically prepared draft, set its location/time, and import or assign weekly leaders before Sunday. Cancellation remains available. Confirm a staging Sunday execution publishes a ready draft, leaves a blocked draft untouched and archives only eligible completed published weeks.
+
+The trigger polls eligibility, so publication normally occurs on the first successful execution at or after the configured time, not precisely to the minute. Google trigger delays, quotas and failures still apply. Disabling automation stops lifecycle changes but leaves the installed timer harmlessly checking the flag. Snapshot reads do not run or persist lifecycle automation. The Admin screen cannot install or verify the owner's trigger remotely; monitor Apps Script executions. No trigger has been installed and no live workbook has been changed by this implementation.
+
+Per-week time edits require the current week version and a future draft/published week. Draft edits retain the existing cutoff-to-start lead time. Published edits retain the cutoff or move it earlier to allow at least 30 minutes before the new start, but **never later**, so closed bookings cannot reopen or silently gain a later deadline. Moving a published start back and forth does not cumulatively shorten the cutoff. Booking-open time and existing bookings are preserved; invalid windows and past starts are rejected. The selected week's actual time is displayed rather than the club default.
+
+Demo mode uses the same rules with synthetic data and process-local commits. Enabling it prepares drafts immediately; **runDemoWeeklyAutomation()** is an explicit synthetic tick used in tests, not a persistent live scheduler. Demo snapshot reads never perform lifecycle writes. Restarting the demo resets settings and weeks.
+
+## Weekly leaders from Google Sheets
+
+`UserSetup` and `WeeklyLeaders` are editable input tabs: the script does not apply owner-only protection to them. After deploying the updated scripts, run `unlockClubInputSheets()` once as the workbook owner who is an active club administrator to remove existing script-created protections. Unrelated owner-created protections remain unchanged. Google Sheets workbook editing permission is still required; app roles do not grant spreadsheet access. Restrict workbook editors to trusted administrators.
+
+Both imports validate their inputs before committing. `UserSetup` requires the exact headers `Email, Name, Role, User ID, Active, Version` and uses `configureClubPlatform()`; `WeeklyLeaders` uses the import below. Invalid data leaves stored club data unchanged. `UserSetup` is still regenerated during projection refreshes, so edit and import it in a quiet maintenance window.
+
+The workbook supports a manually maintained **WeeklyLeaders** staging tab. It assigns existing eligible leaders to weekly groups; it does not create members or grant roles. Unlike the generated `Week_<runId>` tabs, this input tab is not overwritten by snapshot refreshes.
+
+1. Copy the updated Apps Script files into the bound project and save, then update the Web App to a new deployment version. Deploy the updated Next.js app too. The Admin screen invokes the import through the authenticated server gateway.
+2. Enable weekly automation to prepare the upcoming draft, or create an additional draft manually. Only future draft or published weeks and groups that are running can be assigned.
+3. Create a tab named `WeeklyLeaders` with exactly these three columns, in this order:
+
+	| Run Date | Group | Leader Name |
+	| --- | --- | --- |
+	| 2026-10-13 | 1 | Alex Smith |
+	| 2026-10-13 | 2 | Priya Shah |
+
+4. Use `YYYY-MM-DD` text or a Google Sheets date cell for Run Date. Date cells are interpreted in the configured club timezone; set the spreadsheet timezone to match. Group is the displayed group number, including decimal labels such as `1.5`. Leader Name must match an existing active member's full name with the `leader` role. Matching ignores letter case and repeated whitespace; duplicate member names reject the import rather than guessing. Rename the old `Leader Email` header to `Leader Name` and replace emails with full names.
+5. Sign in as an administrator, open Admin, and click **Import weekly leaders** under Volunteers. Confirm the import to apply all staged rows across weeks, not only the selected week. The app refreshes its data after a successful import. The button is disabled in demo mode. The manual Apps Script `importWeeklyLeaders` function remains available for an active club administrator with workbook editing access.
+
+Every nonempty row is checked. Duplicate date/group rows, ineligible leaders, cancelled or started weeks, capacity overflow, and existing bookings or volunteer assignments in another group reject the **entire batch**. Errors identify the worksheet row. No partial assignments are saved. Valid changes use the existing assignment rules, reserve confirmed leader places, update versions and audit records, and commit under the shared lock after a verified workbook backup. Repeating an unchanged import does not duplicate bookings or create another backup. A projection failure after commit is reported as `projectionPending`; the next snapshot refresh repairs the display tabs.
+
+Unlisted groups retain their existing assignments. A blank name is rejected, not treated as removal; remove leaders through the Admin screen. Before importing a leader swap between groups, resolve the old assignments and any conflicting bookings in the app. Remove rows for completed or cancelled weeks before the next import. Keep workbook editing access restricted to trusted administrators; import authorization is checked again on every run. UI retries reuse the request receipt so an uncertain save cannot duplicate assignments or backups. Demo mode does not read the live workbook.
+
 ## Booking and management rules
 
 - One active booking per person per week, whether confirmed or waitlisted. Full destinations automatically waitlist.
@@ -81,6 +128,8 @@ Next.js incoming-request logging is disabled because email callback URLs carry b
 - Cancelled weeks retain history but are excluded from participation analytics. Archive completed weeks without deleting booking or attendance records.
 
 ## Analytics and privacy
+
+Admin **Group popularity** measures booking demand across all available completed published/archived weeks, not marked attendance. Cancelled runs/groups, drafts and future weeks are excluded. Average confirmed bookings include assigned volunteers and divide by every completed week that group ran, including zero-booking weeks. Average waitlist uses the final retained queue; booking fill is total confirmed bookings divided by total capacity, not an average of weekly percentages. Selected-week demand shows current noncancelled groups separately from historical averages. Attendance remains optional and is still recorded separately in leader rosters and personal history.
 
 Bookings are intent; attendance is an explicitly recorded outcome, not inferred from a booking. Missing attendance is **unknown**, not zero. Booking utilisation uses confirmed places / available group capacity; attendance utilisation is separate. Cancelled weeks are excluded and dashboards disclose the range and denominator. Waitlist joins and promotions come from audit events, so a cleared final queue does not erase demand. Favourite group derives from actual attended runs, with deterministic ties, and remains unknown without attendance.
 
