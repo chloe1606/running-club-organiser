@@ -278,7 +278,6 @@ th { background: #edf5f2; }
 .auth-content > p { max-width: 58ch; }
 
 .workspace-header { padding: 1.5rem 0; margin-bottom: 1.25rem; }
-.workspace-header h1 { font-size: 2rem; }
 .workspace-header .eyebrow { margin-bottom: .4rem; }
 .admin-dashboard .panel { box-shadow: none; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 1.25rem 0; }
 .admin-dashboard .panel:first-child { border-top: 0; padding-top: 0; }

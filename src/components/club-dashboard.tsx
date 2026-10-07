@@ -120,7 +120,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     } catch (error) { setFailure(true); setMessage(error instanceof Error ? error.message : "Demo unavailable."); }
     finally { setPending(false); }
   }
-  const headings = { runs: "Club Runs", leader: "Leaders", admin: "Admins", profile: "My Running", detail: "Group Details" };
+  const headings = { runs: "Club Runs", leader: "Leaders", admin: "Admin", profile: "My Running", detail: "Group Details" };
   const groups = snapshot.groups.filter(g => g.runId === run?.id).sort((a, b) => a.number - b.number);
   return <main>
     <nav className="club-nav" aria-label="Club navigation">
