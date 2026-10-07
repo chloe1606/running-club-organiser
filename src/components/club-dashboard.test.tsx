@@ -69,10 +69,16 @@ describe("leader attendance clock", () => {
     const picker = html.split('<select id="week"')[1].split("</select>")[0];
     expect(picker).toContain(`value="${current.id}" selected=""`);
     expect(picker).not.toContain("archived");
-    expect(html).toContain("Past runs ·");
-    expect(html).toContain("Choose a past run");
+    expect(html).not.toContain("Past runs ·");
+    expect(html).not.toContain("Choose a past run");
     expect(html).toContain("Bookings open");
     expect(html).not.toContain(">published</option>");
+
+    snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
+    const adminHtml = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "runs" }));
+    expect(adminHtml).toContain("Past runs ·");
+    expect(adminHtml).toContain("Choose a past run");
+    expect(adminHtml.indexOf("Past runs ·")).toBeLessThan(adminHtml.indexOf("Choose your pace group"));
   });
 
   it("uses public booking labels at exact opening and closing boundaries", () => {

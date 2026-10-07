@@ -160,6 +160,12 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
           </select></label>
           {run && <div><span className={`badge ${run.status}`}>{runnerView ? runnerStatus(run, now) : run.status}</span><p>{run.status === "published" ? `Booking ${Date.parse(run.bookingClosesAt) <= now ? "closed" : "closes"} ${dateLabel(run.bookingClosesAt, snapshot.config.timeZone)} at ${new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.bookingClosesAt))}` : "Historical and draft weeks are not open for bookings."}</p></div>}
         </section>
+        {view === "runs" && admin && historicalWeeks.length > 0 && <details className="week-history"><summary>Past runs · {historicalWeeks.length}</summary>
+          <label htmlFor="history-week">Past run week<select id="history-week" value={historicalWeeks.some(week => week.id === effectiveSelectedId) ? effectiveSelectedId : ""} onChange={event => { if (event.target.value) setSelectedId(event.target.value); }}>
+            <option value="">Choose a past run</option>{historicalWeeks.map(week => <option key={week.id} value={week.id}>{dateLabel(week.startsAt, snapshot.config.timeZone)} · {runnerStatus(week, now)}</option>)}
+          </select></label>
+          {activeWeeks.length > 0 && <button className="secondary" onClick={() => setSelectedId(activeWeeks.find(week => bookingIsOpen(week, new Date(now)))?.id ?? activeWeeks[0].id)}>Back to upcoming run</button>}
+        </details>}
         {run?.cancellationReason && <p className="notice error"><strong>Run cancelled:</strong> {run.cancellationReason}</p>}
         {!run && <p className="notice">{view === "leader" ? "You’re not leading any run weeks yet." : "No run weeks are available yet."}</p>}
         {view === "runs" && run && <BookingGroups snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} />}
@@ -173,12 +179,6 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
         </section>}
         {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} selectWeek={setSelectedId} />}
       </>}
-    {view === "runs" && historicalWeeks.length > 0 && <details className="week-history"><summary>Past runs · {historicalWeeks.length}</summary>
-      <label htmlFor="history-week">Past run week<select id="history-week" value={historicalWeeks.some(week => week.id === effectiveSelectedId) ? effectiveSelectedId : ""} onChange={event => { if (event.target.value) setSelectedId(event.target.value); }}>
-        <option value="">Choose a past run</option>{historicalWeeks.map(week => <option key={week.id} value={week.id}>{dateLabel(week.startsAt, snapshot.config.timeZone)} · {runnerStatus(week, now)}</option>)}
-      </select></label>
-      {activeWeeks.length > 0 && <button className="secondary" onClick={() => setSelectedId(activeWeeks.find(week => bookingIsOpen(week, new Date(now)))?.id ?? activeWeeks[0].id)}>Back to upcoming run</button>}
-    </details>}
     <footer className="site-footer"><strong>Better together.</strong><span>PETTS WOOD RUNNERS Tuesday Club Runs</span></footer>
   </main>;
 }
