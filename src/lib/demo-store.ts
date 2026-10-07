@@ -4,6 +4,7 @@ import type { PlatformSnapshot } from "./platform-types";
 import { clubDate, createRunSchedule, nextTuesdayDate, publicationBlockers, sundayPublicationAt, updateRunTime } from "./schedule";
 import { GatewayError } from "./gateway";
 import { DEFAULT_LOCATION_MAPS } from "./locations";
+import { mutationSchema } from "./platform-schema";
 
 // Process-local only: restarts reset this explicitly enabled, synthetic demonstration.
 let store: PlatformSnapshot | undefined;
@@ -83,6 +84,7 @@ function weeklyAutomation(next: PlatformSnapshot, now: Date, actorId: string) {
 export function runDemoWeeklyAutomation(now = new Date()): void {
   const next = structuredClone(enabled());
   weeklyAutomation(next, now, "weekly-automation");
+  next.schedulerHealth = { lastSuccessfulCheckAt: now.toISOString() };
   store = next;
 }
 
@@ -328,6 +330,17 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       next.attendance = next.attendance.filter(a => !(a.runId === run!.id && a.memberId === id));
       next.attendance.push({ id: `demo-attendance-${run!.id}-${id}`, runId: run!.id, groupId: group!.id, memberId: id, outcome: payload.outcome, recordedAt: now.toISOString() });
       group!.version++; break;
+    }
+    case "addMember": {
+      requireAdmin();
+      const parsed = mutationSchema.safeParse({ ...payload, operation });
+      if (!parsed.success || parsed.data.operation !== "addMember") throw new GatewayError("Supply a valid email, full name, roles and active flag.", 400, "INVALID_MEMBER");
+      const input = parsed.data;
+      if (next.members.some(member => member.email.trim().toLowerCase() === input.memberEmail)) throw new GatewayError("A member with this email already exists.", 409, "DUPLICATE_EMAIL");
+      const memberId = crypto.randomUUID();
+      next.members.push({ id: memberId, email: input.memberEmail, name: input.name, roles: [...new Set(input.roles)], active: input.active, version: 1 });
+      payload = { ...payload, memberId };
+      break;
     }
     case "updateMember": {
       requireAdmin();

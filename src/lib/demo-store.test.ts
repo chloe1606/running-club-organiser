@@ -26,6 +26,44 @@ async function setup() {
 }
 
 describe("isolated explicit demo", () => {
+  it("records only explicit synthetic scheduler checks, including disabled no-ops", async () => {
+    const { getDemoSnapshot, runDemoWeeklyAutomation } = await import("./demo-store");
+    const before = getDemoSnapshot("admin");
+    expect(before.schedulerHealth).toBeUndefined();
+    runDemoWeeklyAutomation(new Date("2026-10-02T12:00:00Z"));
+    expect(getDemoSnapshot("admin").schedulerHealth?.lastSuccessfulCheckAt).toBe("2026-10-02T12:00:00.000Z");
+    runDemoWeeklyAutomation(new Date("2026-10-02T12:15:00Z"));
+    const after = getDemoSnapshot("admin");
+    expect(after.schedulerHealth?.lastSuccessfulCheckAt).toBe("2026-10-02T12:15:00.000Z");
+    expect(after.config).toEqual(before.config);
+    expect(after.audit).toEqual(before.audit);
+    expect(after.weeks).toEqual(before.weeks);
+  });
+
+  it("adds members only as admin with generated UUIDs, normalized unique email and safe replay", async () => {
+    const { getDemoSnapshot, mutateDemo } = await setup();
+    const before = getDemoSnapshot("admin");
+    const request = { requestId: randomUUID(), memberEmail: " NEW@example.test ", name: " New Runner ", roles: ["runner"], active: true, memberId: "forged" };
+    expect(() => mutateDemo("addMember", request, "runner")).toThrow("Administrator");
+    expect(getDemoSnapshot("admin")).toEqual(before);
+    const snapshot = mutateDemo("addMember", request, "admin");
+    const member = snapshot.members.find(member => member.email === "new@example.test")!;
+    expect(member).toMatchObject({ name: "New Runner", roles: ["runner"], active: true, version: 1, id: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(member.id).not.toBe("forged");
+    expect(snapshot.audit[0]).toMatchObject({ action: "addMember", memberId: member.id });
+    expect(mutateDemo("addMember", request, "admin")).toEqual(snapshot);
+    expect(() => mutateDemo("addMember", { ...request, requestId: randomUUID() }, "admin")).toThrow("already exists");
+    expect(getDemoSnapshot("admin")).toEqual(snapshot);
+    expect(getDemoSnapshot("runner").members.every(member => member.email === "")).toBe(true);
+  });
+
+  it.each([{ memberEmail: "bad" }, { name: " " }, { roles: [] }, { roles: ["owner"] }, { active: "TRUE" }])("rejects invalid demo member %j atomically", async invalid => {
+    const { getDemoSnapshot, mutateDemo } = await setup();
+    const before = getDemoSnapshot("admin");
+    expect(() => mutateDemo("addMember", { requestId: randomUUID(), memberEmail: "new@example.test", name: "New Runner", roles: ["runner"], active: true, ...invalid }, "admin")).toThrow("valid email");
+    expect(getDemoSnapshot("admin")).toEqual(before);
+  });
+
   it("prepares drafts on an authorized enable, never on reads, and publishes/archives on a synthetic Sunday tick", async () => {
     const { getDemoSnapshot, mutateDemo, runDemoWeeklyAutomation } = await import("./demo-store");
     const initial = getDemoSnapshot("admin");

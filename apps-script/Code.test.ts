@@ -201,6 +201,22 @@ function harness(snapshot?: PlatformSnapshot, initialClock = now) {
 }
 
 describe("weekly automation", () => {
+  it("persists successful disabled and repeated no-op checks without changing settings or audit", () => {
+    const app = harness(fixture());
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().schedulerHealth).toEqual({ lastSuccessfulCheckAt: now });
+    const config = app.state().config;
+    app.setNow("2026-08-01T12:15:00.000Z");
+    runInContext("runWeeklyAutomation()", app.context);
+    expect(app.state().schedulerHealth).toEqual({ lastSuccessfulCheckAt: "2026-08-01T12:15:00.000Z" });
+    expect(app.state().config).toEqual(config);
+    expect(app.state().audit).toEqual([]);
+    app.workbook.rejectCommit = true;
+    app.setNow("2026-08-01T12:30:00.000Z");
+    expect(() => runInContext("runWeeklyAutomation()", app.context)).toThrow();
+    expect(app.state().schedulerHealth?.lastSuccessfulCheckAt).toBe("2026-08-01T12:15:00.000Z");
+  });
+
   function ready(date = "2026-08-04", start = "2026-08-04T18:00:00Z", cutoff = "2026-08-04T17:30:00Z") {
     const snapshot = fixture();
     snapshot.config.weeklyAutomationEnabled = true;
@@ -325,6 +341,22 @@ describe("weekly automation", () => {
 });
 
 describe("weekly leader worksheet import", () => {
+  it("seeds UserSetup only when absent and preserves staging through reads and mutations", () => {
+    const app = harness(fixture());
+    app.post({ operation: "snapshot" });
+    const sheet = app.workbook.getSheetByName("UserSetup")!;
+    expect(sheet.cells).toHaveLength(6);
+    sheet.cells[1][1] = "Staged administrator name";
+    sheet.cells.push(["new@example.org", "New Runner", "runner", "", true, 1]);
+    const stagedRows = structuredClone(sheet.cells);
+    app.workbook.getSheetByName("_PlatformState")!.getRange(1, 2).setValue("");
+    app.post({ operation: "snapshot" });
+    expect(app.mutate().ok).toBe(true);
+    expect(sheet.cells).toEqual(stagedRows);
+    expect(sheet.protected).toBe(false);
+    expect(app.state().members[0].name).toBe("Admin");
+  });
+
   it("unlocks only managed input-tab protections and retains protected data tabs", () => {
     const app = harness(fixture());
     app.workbook.getSheetByName("_PlatformState")!.protect().setDescription("Platform managed — edit through the application");
@@ -348,6 +380,54 @@ describe("weekly leader worksheet import", () => {
     app.workbook.insertSheet("WeeklyLeaders").cells = [["Run Date", "Group", "Leader Name"], ...rows];
     return app;
   }
+
+  function preview(app: ReturnType<typeof harness>) {
+    return app.post({ operation: "previewWeeklyLeaders", email: "admin@example.org" }).data!;
+  }
+
+  it("previews names, assignments, unchanged count and every row error without any writes", () => {
+    const app = staged([["2026-08-11", 2, "One"], ["bad date", 3, "Two"], ["2026-08-11", 99, "One"], ["2026-08-11", 1, "Leader"]]);
+    const before = app.canonical();
+    const sheets = [...app.workbook.sheets.keys()];
+    const writes = app.workbook.canonicalWrites;
+    const result = preview(app);
+    expect(result).toMatchObject({ fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/), unchanged: 1,
+      changes: [{ row: 2, date: "2026-08-11", groupNumber: 2, previousLeaderName: null, leaderName: "One" }],
+      errors: [{ row: 3, code: "INVALID_DATE" }, { row: 4, code: "INVALID_ASSIGNMENT" }] });
+    expect(JSON.stringify(result)).not.toContain("@example.org");
+    expect(app.canonical()).toEqual(before);
+    expect(app.workbook.canonicalWrites).toBe(writes);
+    expect([...app.workbook.sheets.keys()]).toEqual(sheets);
+    expect(app.workbook.backups).toBe(0);
+    expect(app.workbook.getSheetByName("WeeklyLeaders")!.protected).toBe(false);
+    expect(app.post({ operation: "previewWeeklyLeaders", email: "one@example.org" })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+    expect(app.post({ operation: "previewWeeklyLeaders", email: "inactive@example.org" })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+  });
+
+  it("rejects missing previews and stale worksheet or canonical data, then applies a fresh preview", () => {
+    const app = staged([["2026-08-11", 2, "One"]]);
+    const request = { operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(201) };
+    const token = preview(app).fingerprint;
+    expect(app.post(request)).toMatchObject({ ok: false, code: "STALE_IMPORT" });
+    app.workbook.getSheetByName("WeeklyLeaders")!.cells[1][2] = " ONE ";
+    expect(app.post({ ...request, expectedImportFingerprint: token })).toMatchObject({ ok: false, code: "STALE_IMPORT" });
+    const secondToken = preview(app).fingerprint;
+    expect(app.mutate({ email: "two@example.org" }).ok).toBe(true);
+    expect(app.post({ ...request, expectedImportFingerprint: secondToken })).toMatchObject({ ok: false, code: "STALE_IMPORT" });
+    expect(app.workbook.backups).toBe(0);
+    expect(app.post({ ...request, expectedImportFingerprint: preview(app).fingerprint })).toMatchObject({ ok: true, data: { imported: 1 } });
+    expect(app.workbook.backups).toBe(1);
+  });
+
+  it("does not persist candidate assignments or audits when a preview contains errors", () => {
+    const app = staged([["2026-08-11", 2, "One"], ["2026-08-11", 3, "Two"], ["2026-08-11", 4, "Unknown"]]);
+    const result = preview(app);
+    expect(result.errors).toHaveLength(2);
+    const before = app.canonical();
+    expect(app.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(202), expectedImportFingerprint: result.fingerprint })).toMatchObject({ ok: false, code: "INVALID_ASSIGNMENT" });
+    expect(app.canonical()).toEqual(before);
+    expect(app.workbook.backups).toBe(0);
+  });
 
   it("imports future weekly assignments with confirmed places and is repeat-safe", () => {
     const app = staged([["2026-08-11", 2, " oNe "]]);
@@ -430,7 +510,7 @@ describe("weekly leader worksheet import", () => {
 
   it("imports through the authenticated gateway and replays receipts without rereading the sheet", () => {
     const app = staged([["2026-08-11", 2, "One"]]);
-    const request = { operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(98) };
+    const request = { operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(98), expectedImportFingerprint: preview(app).fingerprint };
     expect(app.post(request)).toMatchObject({ ok: true, data: { imported: 1 } });
     expect(app.state().groups[1].leaderId).toBe("one");
     const before = app.canonical();
@@ -438,7 +518,7 @@ describe("weekly leader worksheet import", () => {
     expect(app.post(request)).toMatchObject({ ok: true, data: { imported: 1 } });
     expect(app.canonical()).toEqual(before);
     expect(app.workbook.backups).toBe(1);
-    expect(app.post({ ...request, requestId: requestId(97) })).toMatchObject({ ok: false, code: "INVALID_ASSIGNMENT" });
+    expect(app.post({ ...request, requestId: requestId(97), expectedImportFingerprint: preview(app).fingerprint })).toMatchObject({ ok: false, code: "INVALID_ASSIGNMENT" });
     expect(app.canonical()).toEqual(before);
   });
 
@@ -447,14 +527,14 @@ describe("weekly leader worksheet import", () => {
     const canonical = runInContext("loadPlatformState_()", app.context);
     canonical.snapshot.members.find((member: { id: string }) => member.id === "one").name = "Alex Smith";
     runInContext("commitPlatformState_", app.context)(canonical);
-    expect(app.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(96) })).toMatchObject({ ok: true });
+    expect(app.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(96), expectedImportFingerprint: preview(app).fingerprint })).toMatchObject({ ok: true });
 
     const duplicate = staged([["2026-08-11", 2, "One"]]);
     const duplicateState = runInContext("loadPlatformState_()", duplicate.context);
     duplicateState.snapshot.members.find((member: { id: string }) => member.id === "two").name = " one ";
     runInContext("commitPlatformState_", duplicate.context)(duplicateState);
     const before = duplicate.canonical();
-    expect(duplicate.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(95) })).toMatchObject({ ok: false, message: expect.stringContaining("ambiguous") });
+    expect(duplicate.post({ operation: "importWeeklyLeaders", email: "admin@example.org", requestId: requestId(95), expectedImportFingerprint: preview(duplicate).fingerprint })).toMatchObject({ ok: false, message: expect.stringContaining("ambiguous") });
     expect(duplicate.canonical()).toEqual(before);
     expect(duplicate.workbook.backups).toBe(0);
   });
@@ -473,6 +553,28 @@ describe("weekly leader worksheet import", () => {
 });
 
 describe("Apps Script locked gateway", () => {
+  it("adds members only as admin with generated IDs, normalized unique email and repeat-safe receipts", () => {
+    const app = harness(fixture());
+    const request = { operation: "addMember", requestId: requestId(301), memberEmail: " NEW@example.org ", name: " New Runner ", roles: ["runner"], active: true, memberId: "forged" };
+    expect(app.post({ ...request, email: "one@example.org" })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+    expect(app.post({ ...request, email: "admin@example.org" })).toMatchObject({ ok: true });
+    const member = app.state().members.find(member => member.email === "new@example.org")!;
+    expect(member).toMatchObject({ name: "New Runner", roles: ["runner"], active: true, version: 1, id: expect.stringMatching(/^[a-f0-9-]{36}$/) });
+    expect(member.id).not.toBe("forged");
+    const before = app.canonical();
+    expect(app.post({ ...request, email: "admin@example.org" })).toMatchObject({ ok: true });
+    expect(app.canonical()).toEqual(before);
+    expect(app.post({ ...request, email: "admin@example.org", requestId: requestId(302) })).toMatchObject({ ok: false, code: "DUPLICATE_EMAIL" });
+    expect(app.canonical()).toEqual(before);
+  });
+
+  it.each([{ memberEmail: "bad" }, { name: " " }, { roles: [] }, { roles: ["owner"] }, { active: "TRUE" }])("rejects invalid new member %j atomically", (invalid) => {
+    const app = harness(fixture());
+    const before = app.canonical();
+    expect(app.post({ operation: "addMember", requestId: requestId(303), email: "admin@example.org", memberEmail: "new@example.org", name: "New Runner", roles: ["runner"], active: true, ...invalid })).toMatchObject({ ok: false, code: "INVALID_MEMBER" });
+    expect(app.canonical()).toEqual(before);
+  });
+
   it("seeds default venues and lets admins remove an unused venue", () => {
     const app = harness(fixture());
     const initial = app.post({ operation: "snapshot" });

@@ -36,10 +36,13 @@ function dispatch_(request) {
     return response_(true, null, null, snapshotFor_(state.snapshot, request.email));
   }
   if (!state.schemaVersion) fail_("MIGRATION_REQUIRED", "An administrator must back up and migrate the legacy workbook before writes.");
-  repairProjections_(state);
   const email = normalizeEmail_(request.email);
   const actor = state.snapshot.members.find((member) => member.email === email && member.active);
   if (!actor) fail_("FORBIDDEN", "An active club membership is required.");
+  if (request.operation === "previewWeeklyLeaders") {
+    return response_(true, null, null, previewWeeklyLeaders_(state, actor, new Date()).preview);
+  }
+  repairProjections_(state);
   if (typeof request.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.requestId)) {
     fail_("INVALID_REQUEST", "A stable UUID requestId is required.");
   }
@@ -54,7 +57,7 @@ function dispatch_(request) {
   // Mutate a detached candidate. Rejections cannot remove an existing booking.
   state = JSON.parse(JSON.stringify(state));
   const result = request.operation === "importWeeklyLeaders"
-    ? importWeeklyLeaders_(state, actor, new Date())
+    ? importWeeklyLeaders_(state, actor, new Date(), request.expectedImportFingerprint, true)
     : mutatePlatform_(state.snapshot, request, actor, new Date(), state.groupDefinitions);
   if (request.operation === "updateWeeklyAutomation") weeklyAutomation_(state.snapshot, state.groupDefinitions, new Date(), actor);
   validatePlatform_(state.snapshot);
@@ -129,6 +132,7 @@ function runWeeklyAutomation() {
     const candidate = JSON.parse(JSON.stringify(state));
     weeklyAutomation_(candidate.snapshot, candidate.groupDefinitions, new Date(), { id: "weekly-automation", roles: ["admin"] });
     validatePlatform_(candidate.snapshot);
+    candidate.snapshot.schedulerHealth = { lastSuccessfulCheckAt: new Date().toISOString() };
     if (JSON.stringify(candidate.snapshot) !== JSON.stringify(state.snapshot)) commitPlatformState_(candidate);
     return { projectionPending: !repairProjections_(candidate) };
   });
@@ -137,7 +141,7 @@ function runWeeklyAutomation() {
 function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   const operation = request.operation;
   const admin = actor.roles.includes("admin");
-  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "moveRunner", "updateLocations"];
+  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "moveRunner", "updateLocations"];
   if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
   let run;
   let group;
@@ -211,6 +215,16 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
     snapshot.config.locationMaps = locationMaps;
     snapshot.config.version = (snapshot.config.version || 1) + 1;
     result = { location: snapshot.config.location };
+  } else if (operation === "addMember") {
+    const email = normalizeEmail_(request.memberEmail);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+        typeof request.name !== "string" || !request.name.trim() || request.name.trim().length > 100 ||
+        !Array.isArray(request.roles) || !request.roles.length || request.roles.some((role) => !["runner", "leader", "sweeper", "admin"].includes(role)) ||
+        typeof request.active !== "boolean") fail_("INVALID_MEMBER", "Supply a valid email, full name, roles and active flag.");
+    if (snapshot.members.some((member) => normalizeEmail_(member.email) === email)) fail_("DUPLICATE_EMAIL", "A member with this email already exists.");
+    const member = { id: Utilities.getUuid(), email, name: request.name.trim(), roles: Array.from(new Set(request.roles)), active: request.active, version: 1 };
+    snapshot.members.push(member);
+    result = { memberId: member.id, version: 1 };
   } else if (operation === "updateMember") {
     const member = snapshot.members.find((entry) => entry.id === request.memberId);
     if (!member) fail_("NOT_FOUND", "The member does not exist.");
@@ -427,7 +441,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   }
   snapshot.audit.push({
     id: Utilities.getUuid(), runId: run ? run.id : "", groupId: group ? group.id : undefined,
-    memberId: request.memberId || actor.id, actorId: actor.id, action: operation,
+    memberId: operation === "addMember" ? result.memberId : request.memberId || actor.id, actorId: actor.id, action: operation,
     at: now.toISOString(), requestId: request.requestId,
   });
   return result;

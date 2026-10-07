@@ -9,17 +9,17 @@ import { queuePosition } from "../lib/analytics";
 import type { Mutate } from "./club-dashboard";
 import { RouteDescription } from "./route-description";
 
-export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
-  snapshot: PlatformSnapshot; run: Run; groups: Group[]; mutate: Mutate; pending: boolean;
+export function BookingGroups({ snapshot, run, groups, mutate, pending, now }: {
+  snapshot: PlatformSnapshot; run: Run; groups: Group[]; mutate: Mutate; pending: boolean; now: number;
 }) {
   const own = snapshot.bookings.find(b => b.runId === run.id && b.memberId === snapshot.currentMemberId && b.status !== "cancelled");
-  const open = bookingIsOpen(run, new Date());
+  const open = bookingIsOpen(run, new Date(now));
   const currentMember = snapshot.members.find(member => member.id === snapshot.currentMemberId);
   const canVolunteerAsSweeper = Boolean(currentMember?.active && currentMember.roles.includes("runner") && currentMember.roles.includes("sweeper"));
   const [sweeperOptIns, setSweeperOptIns] = useState<Record<string, boolean>>({});
   return <section className="groups">
     <div className="section-title"><div><p className="eyebrow">Find your people</p><h2>Choose your pace group</h2></div><p>{groups.length} groups · {own ? "You have a booking this week" : "One group per runner"}</p></div>
-    {own && <p className="notice">Your booking: Group {snapshot.groups.find(g => g.id === own.groupId)?.number} · {own.status === "waitlisted" ? `waitlist position #${queuePosition(snapshot, own.groupId, own.memberId)} (not confirmed)` : "confirmed"}{own.source === "assignment" && " · assigned volunteer; ask an administrator to change this assignment."}</p>}
+    {own && <p className="notice own-booking"><strong>Your booking: Group {snapshot.groups.find(g => g.id === own.groupId)?.number}</strong> · {own.status === "waitlisted" ? `waitlist position #${queuePosition(snapshot, own.groupId, own.memberId)} (not confirmed)` : "confirmed"}{own.status === "waitlisted" && ". A queue place is not a confirmed booking."}{own.source === "assignment" && " · assigned volunteer; ask an administrator to change this assignment."} <a href={`#booking-${own.groupId}`}>View your group</a></p>}
     {!open && <p className="notice">Booking is closed for this week. You can still view group information.</p>}
     <div className="grid">{groups.map(group => {
       const count = confirmedCount(group.id, snapshot.bookings);
@@ -27,13 +27,14 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending }: {
       const waitlist = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").length;
       const mine = own?.groupId === group.id;
       const groupCancelled = group.cancelled === true;
+      const availability = groupCancelled ? "group-closed-badge" : spaces === 0 ? "full" : spaces < 5 ? "amber" : "green";
       const leader = snapshot.members.find(m => m.id === group.leaderId)?.name;
       const sweeper = snapshot.members.find(m => m.id === group.sweeperId)?.name;
       const sweeperOptIn = sweeperOptIns[group.id] ?? false;
-      return <article className={`group ${mine ? "my-group" : ""} ${groupCancelled ? "group-cancelled" : ""}`} key={group.id}>
-        <div className="group-top"><span className="group-number"><span className="group-number-label">Group</span><strong className="group-number-value">{String(group.number)}</strong></span><span className={`availability ${groupCancelled ? "group-closed-badge" : spaces === 0 ? "full" : spaces < 5 ? "amber" : "green"}`}>{groupCancelled ? "Not running" : spaces === 0 ? "Full · waitlist" : `${spaces} places left`}</span></div>
+      return <article className={`group ${mine ? "my-group" : ""} ${groupCancelled ? "group-cancelled" : ""}`} id={`booking-${group.id}`} key={group.id}>
+        <div className="group-top"><span className="group-number"><span className="group-number-label">Group</span><strong className="group-number-value">{String(group.number)}</strong></span><span className={`availability ${availability}`}>{groupCancelled ? "Not running" : spaces === 0 ? "Full · waitlist" : `${spaces} places left`}</span></div>
         <h3>{group.name ?? `Group ${group.number}`}</h3><p className="pace">{group.paceLabel}</p><p>{group.distanceLabel ?? "Distance to be confirmed"}</p>
-        <div className="occupancy"><span style={{ width: `${Math.min(100, count / group.capacity * 100)}%` }} /></div>
+        <div className="occupancy"><span className={availability} style={{ width: `${Math.min(100, count / group.capacity * 100)}%` }} /></div>
         <p>{count}/{group.capacity} confirmed · Waitlist: {waitlist}</p>
         <div className="volunteers"><p>Leader · <strong>{leader ?? (group.leaderId ? "Assigned club leader" : "To be assigned")}</strong></p><p>Sweeper · {sweeper ?? (group.sweeperId ? "Assigned club member" : "Not assigned")}</p><p className="route-summary">Route · {group.routeNeedsReview ? "Needs review" : group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "To be confirmed"}</p></div>
         {snapshot.currentMemberId && canVolunteerAsSweeper && !mine && !groupCancelled && <label className="check sweeper-opt-in"><input type="checkbox" checked={sweeperOptIn} disabled={pending || !open || spaces === 0} onChange={event => setSweeperOptIns(value => ({ ...value, [group.id]: event.target.checked }))} />I can be this group’s sweeper</label>}

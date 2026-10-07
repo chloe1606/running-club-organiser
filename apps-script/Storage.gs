@@ -220,18 +220,24 @@ function importWeeklyLeaders() {
   });
 }
 
-function importWeeklyLeaders_(candidate, actor, now) {
-    if (!actor.roles.includes("admin")) fail_("FORBIDDEN", "An active administrator must import weekly leaders.");
+function previewWeeklyLeaders_(state, actor, now) {
+    if (!actor.active || !actor.roles.includes("admin")) fail_("FORBIDDEN", "An active administrator must import weekly leaders.");
     const spreadsheet = platformSpreadsheet_();
     const sheet = spreadsheet.getSheetByName("WeeklyLeaders");
-    if (!sheet) fail_("INVALID_ASSIGNMENT", "Create WeeklyLeaders with headers Run Date, Group, Leader Name.");
-    const headers = sheet.getDataRange().getValues()[0];
+    const values = sheet ? sheet.getDataRange().getValues() : [];
+    const fingerprint = platformDigest_(JSON.stringify({ state, values }));
+    const candidate = JSON.parse(JSON.stringify(state));
+    const preview = { fingerprint, changes: [], errors: [], unchanged: 0 };
+    const headers = values[0] || [];
     if (headers.length !== 3 || headers.some((header, index) => header !== ["Run Date", "Group", "Leader Name"][index])) {
-      fail_("INVALID_ASSIGNMENT", "WeeklyLeaders requires exactly these headers: Run Date, Group, Leader Name.");
+      preview.errors.push({ row: 1, code: "INVALID_ASSIGNMENT", message: "WeeklyLeaders requires exactly these headers: Run Date, Group, Leader Name." });
+      return { preview, candidate };
     }
     const seen = new Set();
-    let imported = 0;
-    records_("WeeklyLeaders").forEach((entry) => {
+    values.slice(1).forEach((cells, index) => {
+      if (cells.every((value) => value === "")) return;
+      const entry = { "Run Date": cells[0], Group: cells[1], "Leader Name": cells[2] };
+      const before = JSON.parse(JSON.stringify(candidate.snapshot));
       try {
         const date = entry["Run Date"] instanceof Date
           ? clubLocalDate_(entry["Run Date"], candidate.snapshot.config.timeZone)
@@ -250,23 +256,42 @@ function importWeeklyLeaders_(candidate, actor, now) {
         if (matches.length > 1) fail_("INVALID_ASSIGNMENT", "Leader Name is ambiguous. Make member full names unique before importing.");
         const member = matches[0];
         if (!member || !member.active || !member.roles.includes("leader")) fail_("INVALID_ASSIGNMENT", "Leader Name must match an active member with the leader role.");
-        if (group.leaderId === member.id) return;
+        if (group.leaderId === member.id) { preview.unchanged++; return; }
+        const previous = candidate.snapshot.members.find((item) => item.id === group.leaderId);
         mutatePlatform_(candidate.snapshot, {
           operation: "assignLeader", runId: run.id, groupId: group.id, memberId: member.id,
           runVersion: run.version, groupVersion: group.version, requestId: Utilities.getUuid(),
         }, actor, now, candidate.groupDefinitions);
-        imported++;
+        validatePlatform_(candidate.snapshot);
+        preview.changes.push({ row: index + 2, date, groupNumber: group.number, previousLeaderName: previous ? previous.name : null, leaderName: member.name });
       } catch (error) {
-        if (error.platformCode) fail_(error.platformCode, "WeeklyLeaders row " + entry._row + ": " + error.message);
+        candidate.snapshot = before;
+        if (error.platformCode) { preview.errors.push({ row: index + 2, code: error.platformCode, message: error.message }); return; }
         throw error;
       }
     });
     validatePlatform_(candidate.snapshot);
+    return { preview, candidate };
+}
+
+function importWeeklyLeaders_(state, actor, now, expectedImportFingerprint, requirePreview) {
+    const checked = previewWeeklyLeaders_(state, actor, now);
+    const preview = checked.preview;
+    if ((requirePreview || expectedImportFingerprint !== undefined) && expectedImportFingerprint !== preview.fingerprint) {
+      fail_("STALE_IMPORT", "The worksheet or club data changed. Preview the import again.");
+    }
+    if (preview.errors.length) {
+      const error = preview.errors[0];
+      fail_(error.code, "WeeklyLeaders row " + error.row + ": " + error.message);
+    }
+    const imported = preview.changes.length;
     if (!imported) return { imported: 0 };
+    const spreadsheet = platformSpreadsheet_();
     const backup = spreadsheet.copy(spreadsheet.getName() + " — pre-leader-import backup " + now.toISOString());
     if (!backup || !backup.getId()) fail_("BACKUP_FAILED", "A verified backup copy is required.");
-    candidate.leaderImport = { backupId: backup.getId(), at: now.toISOString(), actorId: actor.id };
-    protectPlatformSheet_(sheet);
+    state.snapshot = checked.candidate.snapshot;
+    state.leaderImport = { backupId: backup.getId(), at: now.toISOString(), actorId: actor.id };
+    protectPlatformSheet_(spreadsheet.getSheetByName("WeeklyLeaders"));
     return { imported };
 }
 
@@ -530,6 +555,12 @@ function isoValue_(value) {
 }
 
 function validatePlatform_(snapshot) {
+  if (snapshot.schedulerHealth !== undefined && (!snapshot.schedulerHealth ||
+      typeof snapshot.schedulerHealth.lastSuccessfulCheckAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(snapshot.schedulerHealth.lastSuccessfulCheckAt) ||
+      !Number.isFinite(new Date(snapshot.schedulerHealth.lastSuccessfulCheckAt).getTime()))) {
+    fail_("INVALID_DATA", "Invalid scheduler health timestamp.");
+  }
   if ((snapshot.config.weeklyAutomationEnabled !== undefined && typeof snapshot.config.weeklyAutomationEnabled !== "boolean") ||
       (snapshot.config.weeklyPublishTime !== undefined && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(snapshot.config.weeklyPublishTime)) ||
       (snapshot.config.version !== undefined && (!Number.isInteger(snapshot.config.version) || snapshot.config.version < 1))) {
@@ -652,8 +683,10 @@ function projectPlatform_(state) {
   });
   writeProjection_("Users", ["Email", "Name", "Role", "User ID", "Active", "Version"],
     snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
-  writeProjection_("UserSetup", ["Email", "Name", "Role", "User ID", "Active", "Version"],
-    snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
+  if (!spreadsheet.getSheetByName("UserSetup")) {
+    writeProjection_("UserSetup", ["Email", "Name", "Role", "User ID", "Active", "Version"],
+      snapshot.members.map((entry) => [entry.email, entry.name, entry.roles.join(","), entry.id, entry.active, entry.version]));
+  }
   writeProjection_("Weeks", ["Week ID", "Date", "Starts At", "Booking Opens At", "Booking Closes At", "Status", "Version", "Cancellation Reason", "Sheet", "Location", "Google Maps URL"],
     snapshot.weeks.map((entry) => [entry.id, clubLocalDate_(new Date(entry.startsAt), snapshot.config.timeZone), entry.startsAt, entry.bookingOpensAt, entry.bookingClosesAt, entry.status, entry.version, entry.cancellationReason || "", weeklySheetName_(entry.id), entry.location || snapshot.config.location, entry.mapsUrl || ""]));
   writeProjection_("Groups", ["Group", "Distance", "Pace", "Capacity", "Group ID"],

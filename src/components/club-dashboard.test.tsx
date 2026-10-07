@@ -2,7 +2,7 @@ import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDemoSnapshot } from "../lib/demo-data";
-import { ClubDashboard } from "./club-dashboard";
+import { ClubDashboard, runnerStatus } from "./club-dashboard";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 vi.mock("@/lib/domain", () => import("../lib/domain"));
@@ -34,6 +34,78 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it("counts confirmed profile runs without attendance and excludes waitlisted or cancelled runs", () => {
+    const snapshot = createDemoSnapshot(new Date(startsAt));
+    const memberId = snapshot.currentMemberId!;
+    const run = snapshot.weeks[0];
+    const group = snapshot.groups.find(candidate => candidate.runId === run.id && !candidate.cancelled)!;
+    snapshot.bookings = [{ id: "profile-confirmed", memberId, runId: run.id, groupId: group.id,
+      status: "confirmed", source: "member", bookedAt: run.bookingOpensAt, version: 1 }];
+    snapshot.attendance = [];
+    group.leaderId = memberId;
+    const renderProfile = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "profile" }));
+    expect(renderProfile()).toContain("Runs attended</span><strong>1</strong>");
+    expect(renderProfile()).toContain(`Favourite group</span><strong>Group ${group.number}</strong>`);
+    expect(renderProfile()).toContain("Runs led</span><strong>1</strong>");
+    snapshot.bookings[0].status = "waitlisted";
+    expect(renderProfile()).toContain("Runs attended</span><strong>0</strong>");
+    expect(renderProfile()).toContain("Favourite group</span><strong>Not yet</strong>");
+    snapshot.bookings[0].status = "confirmed";
+    group.cancelled = true;
+    expect(renderProfile()).toContain("Runs attended</span><strong>0</strong>");
+    expect(renderProfile()).toContain("Runs led</span><strong>0</strong>");
+    group.cancelled = false;
+    run.status = "cancelled";
+    expect(renderProfile()).toContain("Runs attended</span><strong>0</strong>");
+    expect(renderProfile()).toContain("Runs led</span><strong>0</strong>");
+  });
+  it("prioritises a bookable runner week over earlier future closed and historical weeks", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    const current = snapshot.weeks[0];
+    const earlier = { ...current, id: "earlier-closed", startsAt: "2026-10-06T13:00:00Z", bookingClosesAt: "2026-10-06T11:00:00Z" };
+    snapshot.weeks.unshift(earlier);
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "runs" }));
+    const picker = html.split('<select id="week"')[1].split("</select>")[0];
+    expect(picker).toContain(`value="${current.id}" selected=""`);
+    expect(picker).not.toContain("archived");
+    expect(html).toContain("Past runs ·");
+    expect(html).toContain("Choose a past run");
+    expect(html).toContain("Bookings open");
+    expect(html).not.toContain(">published</option>");
+  });
+
+  it("uses public booking labels at exact opening and closing boundaries", () => {
+    const run = createDemoSnapshot(new Date("2026-10-06T12:00:00Z")).weeks[0];
+    expect(runnerStatus(run, Date.parse(run.bookingOpensAt) - 1)).toBe("Bookings closed");
+    expect(runnerStatus(run, Date.parse(run.bookingOpensAt))).toBe("Bookings open");
+    expect(runnerStatus(run, Date.parse(run.bookingClosesAt))).toBe("Bookings closed");
+    expect(runnerStatus({ ...run, status: "cancelled" }, Date.parse(run.bookingOpensAt))).toBe("Cancelled");
+  });
+
+  it("reports truthful health, selected readiness and clickable drafts without claiming installation", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.demo = false;
+    snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
+    snapshot.config.weeklyAutomationEnabled = true;
+    snapshot.weeks[0].status = "draft";
+    const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    const html = renderAdmin();
+    expect(html).toContain("Next Tuesday ·");
+    expect(html).toContain("Leader readiness:");
+    expect(html).toContain("<dt>Last successful check</dt>");
+    expect(html).toContain("Automation and schedule");
+    expect(html).toContain("Selected run overrides");
+    expect(html).toContain("Not recorded");
+    expect(html).toContain("Timer operation is unverified");
+    expect(html).toContain('aria-pressed="true"');
+    snapshot.schedulerHealth = { lastSuccessfulCheckAt: "2026-10-06T11:00:00Z" };
+    expect(renderAdmin()).toContain("Scheduler check is overdue");
+    snapshot.schedulerHealth.lastSuccessfulCheckAt = "2026-10-06T11:45:00Z";
+    expect(renderAdmin()).toContain("does not verify that a timer remains installed");
+  });
+
   it("renders booking popularity independently of attendance and excludes cancelled selected groups", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(initialNow));
@@ -95,11 +167,17 @@ describe("leader attendance clock", () => {
     vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
     expect(adminHtml()).toBe(html);
   });
-  it("shows the weekly import command to admins but disables it in demo mode", () => {
+  it("hides the live weekly import in demo mode and wires member onboarding", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-06T12:00:00Z"));
     snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
     const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "admin" }));
-    expect(html).toContain('disabled="">Import weekly leaders</button>');
+    expect(html).not.toContain("Preview import");
+    expect(html).toContain("Add member</summary>");
+    snapshot.demo = false;
+    const liveHtml = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "admin" }));
+    expect(liveHtml).toContain("Import weekly leaders</summary>");
+    expect(liveHtml).toContain("Preview import");
+    expect(liveHtml).not.toContain("Existing leaders in listed groups may be replaced");
   });
   it("renders identical initial HTML despite different server and browser wall clocks", () => {
     vi.setSystemTime(new Date(startsAt - 60_000));

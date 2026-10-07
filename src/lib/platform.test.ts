@@ -12,9 +12,9 @@ vi.mock("./demo-store", () => ({ getDemoSnapshot: vi.fn(), mutateDemo: vi.fn() }
 
 import { getServerSession } from "next-auth";
 import { findActiveMemberByEmail } from "./sheets";
-import { mutateSheet } from "./gateway";
+import { GatewayError, mutateSheet } from "./gateway";
 import { getDemoSnapshot } from "./demo-store";
-import { executeMutation, getPlatformSnapshot } from "./platform";
+import { executeMutation, getPlatformSnapshot, previewWeeklyLeaderImport } from "./platform";
 
 const mutation = {
   operation: "cancelRun" as const, requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d",
@@ -25,6 +25,42 @@ beforeEach(() => { vi.stubEnv("CLUB_DEMO_MODE", "false"); });
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
 describe("server identity and role boundary", () => {
+  it("denies member creation for runners before reaching the gateway", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
+    await expect(executeMutation({ operation: "addMember", requestId: mutation.requestId, memberEmail: "new@example.com", name: "New Runner", roles: ["runner"], active: true })).rejects.toMatchObject({ status: 403 });
+    expect(mutateSheet).not.toHaveBeenCalled();
+  });
+
+  it("requires active admin membership for previews and never trusts a browser actor", async () => {
+    vi.mocked(getServerSession).mockResolvedValue(null);
+    await expect(previewWeeklyLeaderImport()).rejects.toMatchObject({ status: 401 });
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue(undefined);
+    await expect(previewWeeklyLeaderImport()).rejects.toMatchObject({ status: 403 });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
+    await expect(previewWeeklyLeaderImport()).rejects.toMatchObject({ status: 403 });
+    expect(mutateSheet).not.toHaveBeenCalled();
+  });
+
+  it("returns only the typed names-only preview and rejects malformed gateway results", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue({ ...member, roles: "runner, admin" });
+    const preview = { fingerprint: "a".repeat(64), unchanged: 1, errors: [], changes: [{ row: 2, date: "2026-10-13", groupNumber: 2, previousLeaderName: "Alex Smith", leaderName: "Taylor Jones" }] };
+    vi.mocked(mutateSheet).mockResolvedValue({ ...preview, email: "private@example.org", secret: "private-secret", changes: [{ ...preview.changes[0], email: "private@example.org" }] });
+    expect(await previewWeeklyLeaderImport()).toEqual(preview);
+    expect(mutateSheet).toHaveBeenCalledWith("previewWeeklyLeaders", { email: member.email });
+    vi.mocked(mutateSheet).mockResolvedValue({ fingerprint: "invalid" });
+    await expect(previewWeeklyLeaderImport()).rejects.toMatchObject({ status: 502, code: "INVALID_SCHEMA" });
+  });
+
+  it("translates stale import fingerprints to a refreshable conflict", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
+    vi.mocked(findActiveMemberByEmail).mockResolvedValue({ ...member, roles: "admin" });
+    vi.mocked(mutateSheet).mockRejectedValue(new GatewayError("Preview again.", 400, "STALE_IMPORT"));
+    await expect(executeMutation({ operation: "importWeeklyLeaders", requestId: mutation.requestId, expectedImportFingerprint: "a".repeat(64) })).rejects.toMatchObject({ status: 409, code: "STALE_IMPORT" });
+  });
+
   it("denies automation and week-time changes before contacting the gateway", async () => {
     vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
     vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
@@ -33,7 +69,7 @@ describe("server identity and role boundary", () => {
     expect(mutateSheet).not.toHaveBeenCalled();
   });
   it("denies weekly leader imports for non-admins and in demo mode", async () => {
-    const intent = { operation: "importWeeklyLeaders" as const, requestId: mutation.requestId };
+    const intent = { operation: "importWeeklyLeaders" as const, requestId: mutation.requestId, expectedImportFingerprint: "a".repeat(64) };
     vi.mocked(getServerSession).mockResolvedValue({ user: { email: member.email }, expires: "" });
     vi.mocked(findActiveMemberByEmail).mockResolvedValue(member);
     await expect(executeMutation(intent)).rejects.toMatchObject({ status: 403 });

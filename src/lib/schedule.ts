@@ -73,7 +73,7 @@ export function createRunSchedule(
   return { startsAt, bookingOpensAt: now.toISOString(), bookingClosesAt };
 }
 
-export function sundayPublicationAt(run: Run, config: ClubConfig): string {
+export function sundayPublicationAt(run: Pick<Run, "startsAt">, config: ClubConfig): string {
   const date = new Date(`${clubDate(new Date(run.startsAt), config.timeZone)}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() - 2);
   return clubDateTime(date.toISOString().slice(0, 10), config.weeklyPublishTime ?? "18:00", config.timeZone);

@@ -10,6 +10,28 @@ const fixture = {
   config: { location: "DEMO", timeZone: "Europe/London", startTime: "18:30", demoConfiguration: true },
 };
 describe("snapshot integrity", () => {
+  it("retains optional scheduler health and rejects malformed timestamps", () => {
+    const schedulerHealth = { lastSuccessfulCheckAt: "2026-10-04T17:15:00.000Z" };
+    expect(snapshotSchema.parse({ ...fixture, schedulerHealth }).schedulerHealth).toEqual(schedulerHealth);
+    expect(snapshotSchema.safeParse({ ...fixture, schedulerHealth: { lastSuccessfulCheckAt: "yesterday" } }).success).toBe(false);
+    expect(snapshotSchema.parse(fixture).schedulerHealth).toBeUndefined();
+  });
+
+  it("normalizes new member email and strips actor identity and client-generated IDs", () => {
+    const request = { operation: "addMember", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", memberEmail: " NEW@example.org ", name: " New Runner ", roles: ["runner"], active: true, email: "admin@example.org", memberId: "forged", version: 99 };
+    expect(mutationSchema.parse(request)).toEqual({ operation: request.operation, requestId: request.requestId, memberEmail: "new@example.org", name: "New Runner", roles: ["runner"], active: true });
+    for (const invalid of [{ memberEmail: "bad" }, { name: " " }, { roles: [] }, { roles: ["owner"] }, { active: "true" }]) {
+      expect(mutationSchema.safeParse({ ...request, ...invalid }).success).toBe(false);
+    }
+  });
+
+  it("requires a preview fingerprint before applying leader imports", () => {
+    const request = { operation: "importWeeklyLeaders", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d" };
+    expect(mutationSchema.safeParse(request).success).toBe(false);
+    expect(mutationSchema.safeParse({ ...request, expectedImportFingerprint: "a".repeat(64) }).success).toBe(true);
+    expect(mutationSchema.safeParse({ ...request, expectedImportFingerprint: "bad" }).success).toBe(false);
+  });
+
   it("accepts supported weekly data and legacy capacity on read", () => {
     expect(snapshotSchema.safeParse(fixture).success).toBe(true);
     expect(snapshotSchema.safeParse({ ...fixture, weeks: [{ ...fixture.weeks[0], location: "Willett Recreation Ground" }] }).success).toBe(true);

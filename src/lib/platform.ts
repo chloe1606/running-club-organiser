@@ -3,10 +3,10 @@ import { cookies } from "next/headers";
 import { authOptions } from "./auth";
 import { GatewayError, mutateSheet } from "./gateway";
 import { getDemoSnapshot, mutateDemo } from "./demo-store";
-import { snapshotSchema, type ClubMutation } from "./platform-schema";
+import { snapshotSchema, weeklyLeaderImportPreviewSchema, type ClubMutation } from "./platform-schema";
 import { visibleSnapshot } from "./privacy";
 import { findActiveMemberByEmail } from "./sheets";
-import type { PlatformSnapshot } from "./platform-types";
+import type { PlatformSnapshot, WeeklyLeaderImportPreview } from "./platform-types";
 
 export function demoEnabled() {
   return process.env.CLUB_DEMO_MODE === "true";
@@ -40,7 +40,7 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
   if (!session?.user?.email) throw new GatewayError("Sign in to continue.", 401, "UNAUTHORIZED");
   const member = await findActiveMemberByEmail(session.user.email);
   if (!member) throw new GatewayError("Active club membership is required.", 403, "FORBIDDEN");
-  const adminOperations = ["moveRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "updateMember", "importWeeklyLeaders"];
+  const adminOperations = ["moveRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "importWeeklyLeaders"];
   if (adminOperations.includes(mutation.operation) && !member.roles.split(",").map((role) => role.trim()).includes("admin")) {
     throw new GatewayError("Administrator access is required.", 403, "FORBIDDEN");
   }
@@ -54,6 +54,24 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
       throw new GatewayError("Only the assigned weekly leader may manage this group.", 403, "FORBIDDEN");
     }
   }
-  await mutateSheet(mutation.operation, { ...mutation, email: member.email });
+  try {
+    await mutateSheet(mutation.operation, { ...mutation, email: member.email });
+  } catch (error) {
+    if (error instanceof GatewayError && error.code === "STALE_IMPORT") throw new GatewayError(error.message, 409, error.code);
+    throw error;
+  }
   return getPlatformSnapshot();
+}
+
+export async function previewWeeklyLeaderImport(): Promise<WeeklyLeaderImportPreview> {
+  if (demoEnabled()) throw new GatewayError("Weekly leader imports are unavailable in demo mode.", 400, "INVALID_REQUEST");
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.email) throw new GatewayError("Sign in to continue.", 401, "UNAUTHORIZED");
+  const member = await findActiveMemberByEmail(session.user.email);
+  if (!member || !member.roles.split(",").map(role => role.trim()).includes("admin")) {
+    throw new GatewayError("Administrator access is required.", 403, "FORBIDDEN");
+  }
+  const parsed = weeklyLeaderImportPreviewSchema.safeParse(await mutateSheet("previewWeeklyLeaders", { email: member.email }));
+  if (!parsed.success) throw new GatewayError("Invalid leader import preview.", 502, "INVALID_SCHEMA");
+  return parsed.data;
 }

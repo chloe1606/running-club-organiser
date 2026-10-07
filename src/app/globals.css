@@ -82,6 +82,7 @@ p { margin: .6rem 0; }
 .inline-form, .venue-editor, .venue-add-form { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: end; min-width: 0; }
 .inline-form > *, .venue-editor > *, .venue-add-form > * { min-width: 0; }
 .inline-form button, .venue-editor button, .venue-add-form button { max-width: 100%; white-space: normal; }
+.venue-add-form { padding-top: 1.5rem; }
 .assignment-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 1rem; margin: 1rem 0; min-width: 0; }
 .assignment-grid > label { min-width: 0; }
 .admin-dashboard, .admin-dashboard > *, .admin-dashboard .panel, .admin-dashboard form, .admin-dashboard label { min-width: 0; max-width: 100%; }
@@ -96,6 +97,11 @@ p { margin: .6rem 0; }
 .admin-dashboard .automation-toggle input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--club-teal); }
 .admin-dashboard .automation-toggle span { line-height: 1.35; }
 .admin-dashboard .admin-disclosure { margin: .85rem 0; }
+.admin-dashboard .admin-disclosure > summary { font-size: 1rem; font-weight: 800; }
+.admin-dashboard .admin-disclosure > .disclosure-content, .admin-dashboard .cancel-disclosure > .disclosure-content { border: 1px solid #b6d5ce; border-radius: 6px; padding: 1rem; margin-top: .75rem; }
+.admin-dashboard .disclosure-content h3, .admin-dashboard .disclosure-content .admin-disclosure > summary { font-size: .9rem; font-weight: 700; }
+.admin-dashboard .disclosure-content > .admin-disclosure:first-child { margin-top: 0; }
+.admin-dashboard .disclosure-content .admin-disclosure > .disclosure-content { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: .75rem 0 0; }
 .location-settings { max-width: 100%; padding: 1.15rem; }
 .location-settings h2 { font-size: 1.35rem; }
 .location-settings .hint { margin-bottom: .8rem; }
@@ -246,6 +252,7 @@ h2 { font-size: 1.8rem; }
 .groups .group-cancelled .group-number { background: #d8d8d1; color: #4e504a; box-shadow: none; }
 .occupancy { background: #e0eeea; }
 .occupancy span { background: var(--club-teal); }
+.groups .occupancy span { background: currentColor; }
 .panel { background: #fff; box-shadow: 0 2px 9px rgb(22 48 42 / 4%); }
 .roster li { background: #f6f6f1; border-color: #e2e1d8; border-radius: 4px; }
 .attendance-roster { gap: .25rem; }
@@ -269,6 +276,33 @@ th { background: #edf5f2; }
 .auth-content h1 { font-size: 3rem; }
 .auth-content h2 { margin-top: 2rem !important; }
 .auth-content > p { max-width: 58ch; }
+
+.workspace-header { padding: 1.5rem 0; margin-bottom: 1.25rem; }
+.workspace-header h1 { font-size: 2rem; }
+.workspace-header .eyebrow { margin-bottom: .4rem; }
+.admin-dashboard .panel { box-shadow: none; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 1.25rem 0; }
+.admin-dashboard .panel:first-child { border-top: 0; padding-top: 0; }
+.admin-dashboard h2 { font-size: 1.35rem; }
+.selected-run-summary { border-left: 4px solid var(--club-accent); padding-left: .85rem; margin: 1rem 0; }
+.selected-run-summary p, .automation-health p { overflow-wrap: anywhere; }
+.automation-health { border-top: 1px solid var(--line); padding-top: .85rem; margin-top: 1rem; font-size: .88rem; }
+.automation-health .notice { margin: .6rem 0; }
+.week-history { margin: 2rem 0 1.75rem; font-size: .9rem; }
+.profile-stats { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.scheduler-status { display: grid; gap: .65rem; margin: .8rem 0; }
+.scheduler-status > div { display: grid; grid-template-columns: minmax(0, 11rem) minmax(0, 1fr); gap: .5rem 1rem; }
+.scheduler-status dt { color: var(--muted); font-size: .85rem; }
+.scheduler-status dd { margin: 0; font-size: .85rem; font-weight: 700; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .scheduler-status > div { grid-template-columns: minmax(0, 1fr); gap: .15rem; } }
+.week-history summary { cursor: pointer; color: var(--club-teal); font-weight: 700; }
+.week-history label { max-width: 32rem; margin: .75rem 0; }
+.week-history button { font-size: .85rem; }
+.own-booking { border-left: 4px solid var(--club-teal); }
+.own-booking a { display: inline-block; margin-left: .5rem; font-weight: 700; }
+.groups .group { scroll-margin-top: 1rem; }
+.member-editor fieldset label:has(input[type="checkbox"]), .member-editor > label:has(input[type="checkbox"]) { display: flex; align-items: center; gap: .35rem; }
+.member-editor input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 18px; accent-color: var(--club-teal); }
+.member-editor fieldset:has(input[type="email"]) { display: grid; gap: .6rem; width: 100%; }
 
 @media (max-width: 800px) {
 	h1 { max-width: 680px; font-size: 2.75rem; }
