@@ -14,11 +14,17 @@ function fixture() {
 function render(snapshot: PlatformSnapshot) {
   const run = snapshot.weeks[0];
   return renderToStaticMarkup(createElement(BookingGroups, {
-    snapshot, run, groups: snapshot.groups.filter(g => g.runId === run.id), pending: false, mutate: vi.fn(),
+    snapshot, run, groups: snapshot.groups.filter(g => g.runId === run.id), pending: false, mutate: vi.fn(), now: Date.now(),
   }));
 }
 
 describe("runner group UI", () => {
+  it("gives every group a labelled number badge including double-digit groups", () => {
+    const html = render(fixture().snapshot);
+    expect(html.match(/class="group-number-label">Group<\/span>/g)).toHaveLength(13);
+    expect(html).toContain('<strong class="group-number-value">1</strong>');
+    expect(html).toContain('<strong class="group-number-value">13</strong>');
+  });
   it("renders all 13 groups with capacities, leader names and explicit availability labels", () => {
     const { snapshot } = fixture();
     const html = render(snapshot);
@@ -48,6 +54,8 @@ describe("runner group UI", () => {
     });
     const html = render(snapshot);
     expect(html).toContain("waitlist position #5 (not confirmed)");
+    expect(html).toContain("A queue place is not a confirmed booking.");
+    expect(html).toContain(`href="#booking-${groups[2].id}"`);
     expect(html).toContain("Leave this group");
     expect(html).toContain("Switch to this group");
     expect(html).toContain("Switch to waitlist");

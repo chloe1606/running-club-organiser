@@ -65,6 +65,27 @@ export function groupAnalytics(snapshot: PlatformSnapshot, now = new Date()) {
   });
 }
 
+export function bookingPopularity(snapshot: PlatformSnapshot, now = new Date()) {
+  const completedRunIds = new Set(snapshot.weeks.filter(run =>
+    ["published", "archived"].includes(run.status) && new Date(run.startsAt) <= now,
+  ).map(run => run.id));
+  const completedGroups = snapshot.groups.filter(group => completedRunIds.has(group.runId) && !group.cancelled);
+  return [...new Set(completedGroups.map(group => group.number))].sort((first, second) => first - second).map(number => {
+    const groups = completedGroups.filter(group => group.number === number);
+    const ids = new Set(groups.map(group => group.id));
+    const bookings = snapshot.bookings.filter(booking => ids.has(booking.groupId) && completedRunIds.has(booking.runId));
+    const confirmed = bookings.filter(booking => booking.status === "confirmed").length;
+    const waitlisted = bookings.filter(booking => booking.status === "waitlisted").length;
+    const capacity = groups.reduce((total, group) => total + group.capacity, 0);
+    const completedWeeks = groups.length;
+    return { number, capacity, confirmed, waitlisted, completedWeeks,
+      averageConfirmed: confirmed / completedWeeks,
+      averageWaitlisted: waitlisted / completedWeeks,
+      bookingUtilisation: capacity ? Math.round(confirmed / capacity * 100) : undefined,
+      leaderCount: new Set(groups.map(group => group.leaderId).filter((id): id is string => Boolean(id))).size };
+  });
+}
+
 export function waitlistAnalytics(snapshot: PlatformSnapshot, runId?: string) {
   const eligibleRuns = new Set(snapshot.weeks.filter(w => !["draft", "cancelled"].includes(w.status)).map(w => w.id));
   const events = snapshot.audit.filter(a => eligibleRuns.has(a.runId) && (!runId || a.runId === runId) && ["waitlistJoined", "promoted", "withdrawn"].includes(a.action));

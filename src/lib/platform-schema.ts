@@ -12,7 +12,15 @@ const mapsUrl = z.url().refine((value) => {
 }, "Use a Google Maps HTTPS link.");
 export const memberRoles = z.array(z.enum(["runner", "leader", "sweeper", "admin"])).min(1);
 
+export const weeklyLeaderImportPreviewSchema = z.object({
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  changes: z.array(z.object({ row: z.number().int().min(2), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), groupNumber: z.number().positive().max(MAX_GROUP_COUNT), previousLeaderName: z.string().nullable(), leaderName: z.string().min(1) })),
+  errors: z.array(z.object({ row: z.number().int().positive(), code: z.string(), message: z.string() })),
+  unchanged: z.number().int().nonnegative(),
+});
+
 export const snapshotSchema = z.object({
+  schedulerHealth: z.object({ lastSuccessfulCheckAt: timestamp }).optional(),
   weeks: z.array(z.object({
     id, location: z.string().trim().min(1).max(120).optional(), mapsUrl: mapsUrl.optional(), startsAt: timestamp, bookingOpensAt: timestamp, bookingClosesAt: timestamp,
     status: z.enum(["draft", "published", "cancelled", "archived"]),
@@ -45,6 +53,9 @@ export const snapshotSchema = z.object({
     queueSize: z.number().int().nonnegative().optional(),
   })),
   config: z.object({
+    version: z.number().int().positive().optional(),
+    weeklyAutomationEnabled: z.boolean().optional(),
+    weeklyPublishTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional(),
     location: z.string().min(1), timeZone: z.string().min(1).refine((timeZone) => {
       try { new Intl.DateTimeFormat("en-GB", { timeZone }).format(); return true; } catch { return false; }
     }),
@@ -110,6 +121,8 @@ const base = { requestId: z.uuid() };
 const week = { ...base, runId: id, runVersion: version };
 const group = { ...week, groupId: id, groupVersion: version };
 export const mutationSchema = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("updateWeeklyAutomation"), ...base, configVersion: z.number().int().positive(), enabled: z.boolean(), publishTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/) }),
+  z.object({ operation: z.literal("updateWeekTime"), ...week, startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/) }),
   z.object({ operation: z.literal("book"), ...group, sweeper: z.boolean().optional() }),
   z.object({ operation: z.literal("leave"), ...week }),
   z.object({ operation: z.literal("switchGroup"), ...group, sweeper: z.boolean().optional() }),
@@ -124,6 +137,8 @@ export const mutationSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("assignSweeper"), ...group, memberId: z.string().max(120).optional() }),
   z.object({ operation: z.literal("recordAttendance"), ...group, memberId: id, outcome: z.enum(["present", "absent"]) }),
   z.object({ operation: z.literal("cancelGroup"), ...group, reason: z.enum(["low-interest", "no-leader"]) }),
+  z.object({ operation: z.literal("importWeeklyLeaders"), ...base, expectedImportFingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
+  z.object({ operation: z.literal("addMember"), ...base, memberEmail: z.string().trim().toLowerCase().pipe(z.email()), name: z.string().trim().min(1).max(100), roles: memberRoles, active: z.boolean() }),
   z.object({ operation: z.literal("updateMember"), ...base, memberId: id, memberVersion: version, name: z.string().trim().min(1).max(100), roles: memberRoles, active: z.boolean() }),
   z.object({ operation: z.literal("updateLocations"), ...base, location: z.string().trim().min(1).max(120), locations: z.array(z.string().trim().min(1).max(120)).min(1).max(30).superRefine((locations, context) => {
     if (new Set(locations.map((location) => location.toLowerCase())).size !== locations.length) context.addIssue({ code: "custom", message: "Venue names must be unique." });

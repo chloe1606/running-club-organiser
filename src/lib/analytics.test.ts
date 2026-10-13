@@ -1,6 +1,84 @@
 import { describe, expect, it } from "vitest";
 import { createDemoSnapshot } from "./demo-data";
-import { favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics, weeksLedBy } from "./analytics";
+import { bookingPopularity, favouriteGroup, groupAnalytics, queuePosition, waitlistAnalytics, weeklyAnalytics, weeksLedBy } from "./analytics";
+
+describe("booking popularity", () => {
+  const now = new Date("2026-10-02T12:00:00Z");
+  function fixture() {
+    const snapshot = createDemoSnapshot(now);
+    const templateRun = snapshot.weeks[0];
+    const templateGroup = snapshot.groups[0];
+    snapshot.weeks = [
+      { ...templateRun, id: "past-published", startsAt: "2026-09-29T18:00:00Z", status: "published" },
+      { ...templateRun, id: "past-archived", startsAt: "2026-09-22T18:00:00Z", status: "archived" },
+      { ...templateRun, id: "past-draft", startsAt: "2026-09-15T18:00:00Z", status: "draft" },
+      { ...templateRun, id: "past-cancelled", startsAt: "2026-09-08T18:00:00Z", status: "cancelled" },
+      { ...templateRun, id: "future", startsAt: "2026-10-06T18:00:00Z", status: "published" },
+      { ...templateRun, id: "future-archived", startsAt: "2026-10-13T18:00:00Z", status: "archived" },
+    ];
+    snapshot.groups = snapshot.weeks.map((run, index) => ({
+      ...templateGroup, id: run.id, runId: run.id, number: 1, cancelled: false,
+      capacity: index === 0 ? 4 : 8, leaderId: index === 0 ? "leader-one" : "leader-two",
+    }));
+    snapshot.groups.push({ ...snapshot.groups[0], id: "cancelled-group", number: 2, cancelled: true });
+    snapshot.bookings = snapshot.groups.filter(group => group.id !== "past-archived").flatMap(group => [
+      { id: `${group.id}-member`, runId: group.runId, groupId: group.id, memberId: "runner", status: "confirmed" as const, source: "member" as const, bookedAt: now.toISOString(), version: 1 },
+      { id: `${group.id}-volunteer`, runId: group.runId, groupId: group.id, memberId: "leader-one", status: "confirmed" as const, source: "assignment" as const, bookedAt: now.toISOString(), version: 1 },
+      { id: `${group.id}-queue`, runId: group.runId, groupId: group.id, memberId: "queued", status: "waitlisted" as const, source: "member" as const, bookedAt: now.toISOString(), version: 1 },
+      { id: `${group.id}-withdrawn`, runId: group.runId, groupId: group.id, memberId: "withdrawn", status: "cancelled" as const, source: "member" as const, bookedAt: now.toISOString(), version: 1 },
+    ]);
+    return snapshot;
+  }
+  it("counts zero-booking weeks and volunteers, excludes ineligible runs/groups, and weights fill by capacity", () => {
+    expect(bookingPopularity(fixture(), now)).toEqual([{
+      number: 1, capacity: 12, confirmed: 2, waitlisted: 1, completedWeeks: 2,
+      averageConfirmed: 1, averageWaitlisted: 0.5, bookingUtilisation: 17, leaderCount: 2,
+    }]);
+  });
+  it("does not depend on recorded attendance or the system wall clock", () => {
+    const snapshot = fixture();
+    const expected = bookingPopularity(snapshot, now);
+    snapshot.attendance = [];
+    expect(bookingPopularity(snapshot, now)).toEqual(expected);
+    snapshot.attendance = [{ id: "absent", runId: "past-published", groupId: "past-published", memberId: "runner", outcome: "absent", recordedAt: now.toISOString() }];
+    expect(bookingPopularity(snapshot, now)).toEqual(expected);
+  });
+  it("uses only the retained queue, not historical waitlist joins or promotions", () => {
+    const snapshot = fixture();
+    snapshot.bookings = snapshot.bookings.filter(booking => booking.status !== "waitlisted");
+    expect(bookingPopularity(snapshot, now)[0].averageWaitlisted).toBe(0);
+    expect(snapshot.audit.length).toBeGreaterThan(0);
+  });
+  it("reports zero bookings and undefined fill for zero capacity without inventing attendance", () => {
+    const snapshot = fixture();
+    snapshot.bookings = [];
+    snapshot.groups.forEach(group => { group.capacity = 0; delete group.leaderId; });
+    expect(bookingPopularity(snapshot, now)[0]).toMatchObject({
+      averageConfirmed: 0, averageWaitlisted: 0, bookingUtilisation: undefined, completedWeeks: 2, leaderCount: 0,
+    });
+    snapshot.weeks = [];
+    expect(bookingPopularity(snapshot, now)).toEqual([]);
+  });
+  it("includes all completed history, including runs at the supplied start-time boundary", () => {
+    const snapshot = fixture();
+    snapshot.weeks[0].startsAt = now.toISOString();
+    snapshot.weeks[1].startsAt = "2020-01-01T18:00:00Z";
+    expect(bookingPopularity(snapshot, now)[0].completedWeeks).toBe(2);
+    snapshot.weeks[0].startsAt = new Date(now.getTime() + 1).toISOString();
+    expect(bookingPopularity(snapshot, now)[0].completedWeeks).toBe(1);
+  });
+  it("does not truncate completed history to the latest twelve weeks", () => {
+    const snapshot = fixture();
+    const templateRun = snapshot.weeks[0];
+    const templateGroup = snapshot.groups[0];
+    snapshot.weeks = Array.from({ length: 14 }, (_, index) => ({
+      ...templateRun, id: `history-${index}`, startsAt: new Date(now.getTime() - (index + 1) * 7 * 86_400_000).toISOString(),
+    }));
+    snapshot.groups = snapshot.weeks.map(run => ({ ...templateGroup, id: run.id, runId: run.id }));
+    snapshot.bookings = [];
+    expect(bookingPopularity(snapshot, now)[0]).toMatchObject({ completedWeeks: 14, averageConfirmed: 0, averageWaitlisted: 0 });
+  });
+});
 
 describe("attendance analytics", () => {
   it("lists only weeks where the member is assigned as leader", () => {

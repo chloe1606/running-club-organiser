@@ -26,6 +26,97 @@ async function setup() {
 }
 
 describe("isolated explicit demo", () => {
+  it("records only explicit synthetic scheduler checks, including disabled no-ops", async () => {
+    const { getDemoSnapshot, runDemoWeeklyAutomation } = await import("./demo-store");
+    const before = getDemoSnapshot("admin");
+    expect(before.schedulerHealth).toBeUndefined();
+    runDemoWeeklyAutomation(new Date("2026-10-02T12:00:00Z"));
+    expect(getDemoSnapshot("admin").schedulerHealth?.lastSuccessfulCheckAt).toBe("2026-10-02T12:00:00.000Z");
+    runDemoWeeklyAutomation(new Date("2026-10-02T12:15:00Z"));
+    const after = getDemoSnapshot("admin");
+    expect(after.schedulerHealth?.lastSuccessfulCheckAt).toBe("2026-10-02T12:15:00.000Z");
+    expect(after.config).toEqual(before.config);
+    expect(after.audit).toEqual(before.audit);
+    expect(after.weeks).toEqual(before.weeks);
+  });
+
+  it("adds members only as admin with generated UUIDs, normalized unique email and safe replay", async () => {
+    const { getDemoSnapshot, mutateDemo } = await setup();
+    const before = getDemoSnapshot("admin");
+    const request = { requestId: randomUUID(), memberEmail: " NEW@example.test ", name: " New Runner ", roles: ["runner"], active: true, memberId: "forged" };
+    expect(() => mutateDemo("addMember", request, "runner")).toThrow("Administrator");
+    expect(getDemoSnapshot("admin")).toEqual(before);
+    const snapshot = mutateDemo("addMember", request, "admin");
+    const member = snapshot.members.find(member => member.email === "new@example.test")!;
+    expect(member).toMatchObject({ name: "New Runner", roles: ["runner"], active: true, version: 1, id: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(member.id).not.toBe("forged");
+    expect(snapshot.audit[0]).toMatchObject({ action: "addMember", memberId: member.id });
+    expect(mutateDemo("addMember", request, "admin")).toEqual(snapshot);
+    expect(() => mutateDemo("addMember", { ...request, requestId: randomUUID() }, "admin")).toThrow("already exists");
+    expect(getDemoSnapshot("admin")).toEqual(snapshot);
+    expect(getDemoSnapshot("runner").members.every(member => member.email === "")).toBe(true);
+  });
+
+  it.each([{ memberEmail: "bad" }, { name: " " }, { roles: [] }, { roles: ["owner"] }, { active: "TRUE" }])("rejects invalid demo member %j atomically", async invalid => {
+    const { getDemoSnapshot, mutateDemo } = await setup();
+    const before = getDemoSnapshot("admin");
+    expect(() => mutateDemo("addMember", { requestId: randomUUID(), memberEmail: "new@example.test", name: "New Runner", roles: ["runner"], active: true, ...invalid }, "admin")).toThrow("valid email");
+    expect(getDemoSnapshot("admin")).toEqual(before);
+  });
+
+  it("prepares drafts on an authorized enable, never on reads, and publishes/archives on a synthetic Sunday tick", async () => {
+    const { getDemoSnapshot, mutateDemo, runDemoWeeklyAutomation } = await import("./demo-store");
+    const initial = getDemoSnapshot("admin");
+    vi.setSystemTime(new Date("2026-10-07T12:00:00Z"));
+    const intent = { requestId: randomUUID(), configVersion: 1, enabled: true, publishTime: "18:00" };
+    expect(() => mutateDemo("updateWeeklyAutomation", intent, "runner")).toThrow("Administrator");
+    expect(getDemoSnapshot("admin").weeks).toEqual(initial.weeks);
+    let snapshot = mutateDemo("updateWeeklyAutomation", intent, "admin");
+    const draft = snapshot.weeks.find(week => week.status === "draft")!;
+    expect(draft.id).toBe("demo-run-2026-10-13");
+    const groups = snapshot.groups.filter(group => group.runId === draft.id);
+    expect(groups.every(group => !group.cancelled && !group.leaderId && !group.sweeperId && !group.routeDescription)).toBe(true);
+    expect(snapshot.bookings.filter(booking => booking.runId === draft.id)).toEqual([]);
+    expect(mutateDemo("updateWeeklyAutomation", intent, "admin")).toEqual(snapshot);
+    expect(() => mutateDemo("updateWeeklyAutomation", { ...intent, requestId: randomUUID() }, "admin")).toThrow("changed");
+    const before = getDemoSnapshot("admin");
+    vi.setSystemTime(new Date("2026-10-11T17:00:00Z"));
+    expect(getDemoSnapshot("admin")).toEqual(before);
+    runDemoWeeklyAutomation();
+    snapshot = getDemoSnapshot("admin");
+    expect(snapshot.weeks.find(week => week.id === initial.weeks[0].id)?.status).toBe("archived");
+    expect(snapshot.attendance).toEqual(initial.attendance);
+    expect(snapshot.bookings).toEqual(initial.bookings);
+    expect(snapshot.weeks.find(week => week.id === draft.id)?.status).toBe("draft");
+    const leader = snapshot.members.find(member => member.active && member.roles.includes("leader"))!;
+    for (const group of groups) {
+      snapshot = getDemoSnapshot("admin");
+      const week = snapshot.weeks.find(week => week.id === draft.id)!;
+      const payload = { requestId: randomUUID(), runId: week.id, runVersion: week.version, groupId: group.id, groupVersion: group.version };
+      mutateDemo(group.number === 1 ? "assignLeader" : "cancelGroup", { ...payload, ...(group.number === 1 ? { memberId: leader.id } : { reason: "no-leader" }) }, "admin");
+    }
+    runDemoWeeklyAutomation();
+    snapshot = getDemoSnapshot("admin");
+    expect(snapshot.weeks.find(week => week.id === draft.id)?.status).toBe("published");
+    expect(snapshotSchema.safeParse({ ...snapshot, demo: false }).success).toBe(true);
+    runDemoWeeklyAutomation();
+    expect(getDemoSnapshot("admin")).toEqual(snapshot);
+  });
+
+  it("changes future week times without extending published cutoffs or losing bookings", async () => {
+    const { getDemoSnapshot, mutateDemo, run, payload } = await setup();
+    const before = getDemoSnapshot("admin");
+    expect(() => mutateDemo("updateWeekTime", { ...payload(), startTime: "20:00" }, "runner")).toThrow("Administrator");
+    let snapshot = mutateDemo("updateWeekTime", { ...payload(), startTime: "20:00" }, "admin");
+    expect(snapshot.weeks.find(week => week.id === run.id)).toMatchObject({ startsAt: "2026-10-06T19:00:00.000Z", bookingClosesAt: run.bookingClosesAt });
+    expect(snapshot.bookings).toEqual(before.bookings);
+    vi.setSystemTime(new Date("2026-10-06T17:45:00Z"));
+    snapshot = mutateDemo("updateWeekTime", { ...payload(), startTime: "21:00" }, "admin");
+    expect(snapshot.weeks.find(week => week.id === run.id)?.bookingClosesAt).toBe(run.bookingClosesAt);
+    expect(() => mutateDemo("updateWeekTime", { ...payload(), startTime: "17:00" }, "admin")).toThrow("valid booking window");
+    expect(getDemoSnapshot("admin")).toEqual(snapshot);
+  });
+
   it("refuses access unless CLUB_DEMO_MODE is exactly true", async () => {
     const { getDemoSnapshot, mutateDemo } = await import("./demo-store");
     vi.stubEnv("CLUB_DEMO_MODE", "false");
