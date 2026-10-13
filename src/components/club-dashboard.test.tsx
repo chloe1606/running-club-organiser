@@ -75,6 +75,23 @@ describe("leader attendance clock", () => {
     expect(renderProfile()).toContain("Runs attended</span><strong>0</strong>");
     expect(renderProfile()).toContain("Runs led</span><strong>0</strong>");
   });
+  it("links upcoming groups in My Running but not historical groups", () => {
+    const now = Date.parse("2026-10-06T18:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    const currentRun = snapshot.weeks[0];
+    const pastRun = snapshot.weeks[1];
+    const currentGroup = snapshot.groups.find(group => group.runId === currentRun.id)!;
+    const pastGroup = snapshot.groups.find(group => group.runId === pastRun.id)!;
+    snapshot.currentMemberId = snapshot.members[0].id;
+    snapshot.bookings = [currentRun, pastRun].map((run, index) => {
+      const group = index === 0 ? currentGroup : pastGroup;
+      return { id: `profile-${run.id}`, memberId: snapshot.currentMemberId!, runId: run.id, groupId: group.id,
+        status: "confirmed" as const, source: "member" as const, bookedAt: run.bookingOpensAt, version: 1 };
+    });
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "profile" }));
+    expect(html).toContain(`href="/groups/${currentGroup.id}"`);
+    expect(html).not.toContain(`href="/groups/${pastGroup.id}"`);
+  });
   it("prioritises a bookable runner week over earlier future closed and historical weeks", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(initialNow));

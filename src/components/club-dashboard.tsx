@@ -157,7 +157,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     {(view !== "runs" && !snapshot.currentMemberId) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/auth/signin">Sign in</Link></section> :
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
-      view === "profile" ? <Profile snapshot={snapshot} /> : <>
+      view === "profile" ? <Profile snapshot={snapshot} now={now} /> : <>
         <section className="week-bar" aria-label="Selected week">
           <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || (view === "leader" && !leaderWeeks.length)} value={effectiveSelectedId} onChange={e => setSelectedId(e.target.value)}>
             {pickerWeeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt, snapshot.config.timeZone)} · {runnerView ? runnerStatus(w, now) : w.status}</option>)}
@@ -239,7 +239,7 @@ function RouteEditor({ run, group, mutate, pending, now }: { run: Run; group: Gr
   </form>;
 }
 
-function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
+function Profile({ snapshot, now }: { snapshot: PlatformSnapshot; now: number }) {
   const id = snapshot.currentMemberId!;
   const bookings = snapshot.bookings.filter(b => b.memberId === id).sort((a, b) => (snapshot.weeks.find(r => r.id === b.runId)?.startsAt ?? "").localeCompare(snapshot.weeks.find(r => r.id === a.runId)?.startsAt ?? ""));
   const confirmedBookings = bookings.filter(booking => booking.status === "confirmed" &&
@@ -263,7 +263,11 @@ function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
       const run = snapshot.weeks.find(r => r.id === b.runId);
       const group = snapshot.groups.find(g => g.id === b.groupId);
       const outcome = snapshot.attendance.find(a => a.runId === b.runId && a.memberId === id)?.outcome;
-      return <tr key={b.id}><td>{run ? dateLabel(run.startsAt) : b.runId}</td><td><Link href={`/groups/${encodeURIComponent(b.groupId)}`}>Group {group?.number ?? "—"}</Link></td><td>{b.status}{b.status === "waitlisted" && ` · queue #${queuePosition(snapshot, b.groupId, id)}`}</td><td>{outcome ?? "Unknown / not recorded"}</td></tr>;
+      const groupLabel = `Group ${group?.number ?? "—"}`;
+      const groupCell = run && run.status !== "archived" && Date.parse(run.startsAt) >= now
+        ? <Link href={`/groups/${encodeURIComponent(b.groupId)}`}>{groupLabel}</Link>
+        : groupLabel;
+      return <tr key={b.id}><td>{run ? dateLabel(run.startsAt) : b.runId}</td><td>{groupCell}</td><td>{b.status}{b.status === "waitlisted" && ` · queue #${queuePosition(snapshot, b.groupId, id)}`}</td><td>{outcome ?? "Unknown / not recorded"}</td></tr>;
     })}</tbody></table></div>
     {!bookings.length && <p className="notice">Your first club run starts here. Choose a pace group to join.</p>}
   </section>;

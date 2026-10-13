@@ -35,7 +35,8 @@ describe("runner group UI", () => {
     expect(html).toContain("19/19 confirmed · Waitlist: 4");
     expect(html).toContain("Priya Shah");
     expect(html).toContain("Distance to be confirmed");
-    expect(html).toContain("Route · Needs review");
+    expect(html).toContain("Route · TBC");
+    expect(html).not.toContain("Needs review");
     expect(html).toContain("Join waitlist");
     expect(html).toContain("Join this group");
   });
