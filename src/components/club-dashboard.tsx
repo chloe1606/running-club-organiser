@@ -19,7 +19,7 @@ import { WeeklyLeaderImport } from "./weekly-leader-import";
 import { canAssignLeaderToGroup } from "@/lib/leader-availability";
 import { clubDate, clubDateTime, nextTuesdayDate, publicationBlockers, sundayPublicationAt, updateRunTime } from "@/lib/schedule";
 
-export type Mutate = (operation: string, payload: Record<string, unknown>) => Promise<void>;
+export type Mutate = (operation: string, payload: Record<string, unknown>, onSuccess?: () => void) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
   return new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(new Date(value));
 }
@@ -79,7 +79,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   const historicalWeeks = availableWeeks.filter(week => !activeWeeks.some(active => active.id === week.id));
   const pickerWeeks = view === "runs" ? [...activeWeeks, ...(run && historicalWeeks.includes(run) ? [run] : [])] : availableWeeks;
   const meetingLocation = run?.location ?? snapshot.config.location;
-  const mutate: Mutate = async (operation, payload) => {
+  const mutate: Mutate = async (operation, payload, onSuccess) => {
     if (pending) return;
     const intent = JSON.stringify([operation, Object.keys(payload).filter(key => !key.endsWith("Version")).sort().map(key => [key, payload[key]])]);
     const existing = uncertainRequests.current.get(intent);
@@ -98,6 +98,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
       uncertainRequests.current.delete(intent); setRetry(undefined);
       setSnapshot(body.data);
       setMessage("Saved. Your club data is up to date.");
+      onSuccess?.();
     } catch (error) {
       const uncertain = uncertainRequests.current.has(intent);
       setRetry(uncertain ? request : undefined);
@@ -308,8 +309,10 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const [newWeekLocation, setNewWeekLocation] = useState(snapshot.config.location && locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "");
   const [moveMember, setMoveMember] = useState("");
   const [moveGroup, setMoveGroup] = useState("");
+  const [moveMessage, setMoveMessage] = useState("");
   const [trialName, setTrialName] = useState("");
   const [trialGroup, setTrialGroup] = useState("");
+  const [trialMessage, setTrialMessage] = useState("");
   const [search, setSearch] = useState("");
   const [memberPage, setMemberPage] = useState(0);
   const [newLocation, setNewLocation] = useState("");
@@ -467,7 +470,13 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <summary>Runner moves & trial runners</summary>
       <div className="disclosure-content"><h3 className="subheading">Move a runner</h3><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === moveGroup);
-        if (destination) void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember });
+        const runner = snapshot.bookings.find(booking => booking.runId === run.id && booking.memberId === moveMember && booking.status !== "cancelled");
+        if (destination && runner) {
+          setMoveMessage("");
+          void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember }, () => {
+            setMoveMember(""); setMoveGroup(""); setMoveMessage(`Moved ${bookingName(snapshot, runner)} to Group ${destination.number}.`);
+          });
+        }
       }}>
         <SearchableSelect label="Runner" value={moveMember} placeholder="Select runner"
           options={snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && (b.source === "member" || b.source === "trial"))
@@ -477,16 +486,22 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
           options={groups.map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setMoveGroup} />
         <button disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</button>
-      </form><h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
+      </form>{moveMessage && <p className="notice" role="status">{moveMessage}</p>}<h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === trialGroup);
-        if (destination && trialName.trim()) void mutate("addTrialRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, trialName: trialName.trim() });
+        const name = trialName.trim();
+        if (destination && name) {
+          setTrialMessage("");
+          void mutate("addTrialRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, trialName: name }, () => {
+            setTrialName(""); setTrialGroup(""); setTrialMessage(`Added ${name} to Group ${destination.number}.`);
+          });
+        }
       }}>
         <label htmlFor="trial-runner-name">Trial runner name<input id="trial-runner-name" required maxLength={100} value={trialName} onChange={event => setTrialName(event.target.value)} /></label>
         <SearchableSelect label="Group" value={trialGroup} placeholder="Select group"
           options={groups.filter(g => !g.cancelled).map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setTrialGroup} />
         <button disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</button>
-      </form></div>
+      </form>{trialMessage && <p className="notice" role="status">{trialMessage}</p>}</div>
     </details></section>}
     <section className="panel attendance-panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Group popularity</summary>
