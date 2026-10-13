@@ -42,6 +42,7 @@ describe("leader attendance clock", () => {
     snapshot.bookings.push({ id: "trial-move-option", runId: snapshot.weeks[0].id, groupId: trialGroup.id,
       memberId: "trial-option", guestName: "Taylor Trial", status: "confirmed", source: "trial", bookedAt: snapshot.weeks[0].bookingOpensAt, version: 1 });
     const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    expect(html).toContain('<h3 class="subheading">Move a runner</h3>');
     expect(html).toContain("Add a trial runner");
     expect(html).toContain('id="trial-runner-name"');
     expect(html).toContain("Trial runner name");

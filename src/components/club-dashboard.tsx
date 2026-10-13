@@ -463,9 +463,9 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         </div>}
       </div>)}</div>
     </section>}
-    {run && <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
+    {run && <section className="panel"><details className="admin-disclosure runner-moves-disclosure" suppressHydrationWarning>
       <summary>Runner moves & trial runners</summary>
-      <div className="disclosure-content"><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
+      <div className="disclosure-content"><h3 className="subheading">Move a runner</h3><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === moveGroup);
         if (destination) void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember });
       }}>
