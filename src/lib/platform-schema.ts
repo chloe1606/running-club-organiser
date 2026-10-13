@@ -37,7 +37,8 @@ export const snapshotSchema = z.object({
   bookings: z.array(z.object({
     id, runId: id, groupId: id, memberId: id, version,
     status: z.enum(["confirmed", "waitlisted", "cancelled"]),
-    source: z.enum(["member", "assignment"]), bookedAt: timestamp,
+    source: z.enum(["member", "assignment", "trial"]), bookedAt: timestamp,
+    guestName: z.string().trim().min(1).max(100).optional(),
   })),
   members: z.array(z.object({
     id, email: z.email(), name: z.string().min(1), roles: memberRoles,
@@ -101,7 +102,10 @@ export const snapshotSchema = z.object({
   }
   const active = new Set<string>();
   for (const booking of snapshot.bookings) {
-    if (groups.get(booking.groupId)?.runId !== booking.runId || !members.has(booking.memberId)) fail("Invalid booking reference.");
+    const isTrial = booking.source === "trial";
+    if (groups.get(booking.groupId)?.runId !== booking.runId ||
+        (isTrial ? members.has(booking.memberId) || !booking.memberId.startsWith("trial-") || !booking.guestName : !members.has(booking.memberId)) ||
+        (!isTrial && booking.guestName !== undefined)) fail("Invalid booking reference.");
     if (booking.status !== "cancelled") {
       const key = JSON.stringify([booking.runId, booking.memberId]);
       if (active.has(key)) fail("Multiple active bookings for one member in a week.");
@@ -127,6 +131,7 @@ export const mutationSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("leave"), ...week }),
   z.object({ operation: z.literal("switchGroup"), ...group, sweeper: z.boolean().optional() }),
   z.object({ operation: z.literal("moveRunner"), ...group, memberId: id }),
+  z.object({ operation: z.literal("addTrialRunner"), ...group, trialName: z.string().trim().min(1).max(100) }),
   z.object({ operation: z.literal("createWeek"), ...base, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), copyFromRunId: id.optional(), location: z.string().trim().min(1).max(120).optional() }),
   z.object({ operation: z.literal("updateWeekLocation"), ...week, location: z.string().trim().min(1).max(120) }),
   z.object({ operation: z.literal("publishRun"), ...week }),

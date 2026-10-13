@@ -2,7 +2,7 @@ import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDemoSnapshot } from "../lib/demo-data";
-import { ClubDashboard, runnerStatus } from "./club-dashboard";
+import { bookingName, ClubDashboard, runnerStatus } from "./club-dashboard";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 vi.mock("@/lib/domain", () => import("../lib/domain"));
@@ -34,6 +34,21 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it("offers admins a name-only trial runner booking without member details", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
+    const trialGroup = snapshot.groups.find(group => group.runId === snapshot.weeks[0].id)!;
+    snapshot.bookings.push({ id: "trial-move-option", runId: snapshot.weeks[0].id, groupId: trialGroup.id,
+      memberId: "trial-option", guestName: "Taylor Trial", status: "confirmed", source: "trial", bookedAt: snapshot.weeks[0].bookingOpensAt, version: 1 });
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    expect(html).toContain("Add a trial runner");
+    expect(html).toContain('id="trial-runner-name"');
+    expect(html).toContain("Trial runner name");
+    expect(html).toContain("Add trial runner");
+    expect(bookingName(snapshot, snapshot.bookings.at(-1)!)).toBe("Taylor Trial");
+    expect(html).not.toContain("Trial runner email");
+  });
   it("counts confirmed profile runs without attendance and excludes waitlisted or cancelled runs", () => {
     const snapshot = createDemoSnapshot(new Date(startsAt));
     const memberId = snapshot.currentMemberId!;

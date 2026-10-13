@@ -30,6 +30,7 @@ export function getDemoSnapshot(persona?: string): PlatformSnapshot {
   const admin = persona === "admin";
   if (!admin) {
     snapshot.members = snapshot.members.map(m => ({ ...m, email: "" }));
+    snapshot.bookings = snapshot.bookings.map(booking => booking.source === "trial" ? { ...booking, guestName: undefined } : booking);
     snapshot.audit = [];
   }
   return snapshot;
@@ -119,7 +120,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (!queued) break;
       const member = next.members.find(m => m.id === queued.memberId);
       queued.version++;
-      if (!member?.active || !member.roles.includes("runner")) { queued.status = "cancelled"; queueEvent("withdrawn", groupId, queued.memberId); }
+      if (queued.source === "trial" ? !queued.guestName?.trim() : !member?.active || !member.roles.includes("runner")) { queued.status = "cancelled"; queueEvent("withdrawn", groupId, queued.memberId); }
       else { queued.status = "confirmed"; queueEvent("promoted", groupId, queued.memberId); }
     }
   };
@@ -244,6 +245,22 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       break;
     }
     case "book": requireGroup(); book(actorId, "member", payload.sweeper === true); break;
+    case "addTrialRunner": {
+      requireAdmin(); requireGroup();
+      if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed.");
+      const guestName = String(payload.trialName ?? "").trim();
+      if (!guestName || guestName.length > 100) throw new Error("Enter a trial runner name up to 100 characters.");
+      const memberId = `trial-${crypto.randomUUID()}`;
+      const booking: PlatformSnapshot["bookings"][number] = {
+        id: `demo-booking-${requestId}`, runId: run!.id, groupId: group!.id, memberId,
+        status: nextBookingStatus(group!, next.bookings), source: "trial", guestName, bookedAt: now.toISOString(), version: 1,
+      };
+      next.bookings.push(booking);
+      if (booking.status === "waitlisted") queueEvent("waitlistJoined", group!.id, memberId);
+      payload = { ...payload, memberId };
+      group!.version++;
+      break;
+    }
     case "leave": requireRun(); if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed."); leave(actorId); break;
     case "switchGroup":
     case "moveRunner": {
@@ -251,7 +268,29 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       if (operation === "moveRunner") requireAdmin();
       if (!bookingIsOpen(run!, now)) throw new Error("Booking is closed.");
       const target = operation === "moveRunner" ? String(payload.memberId) : actorId;
-      leave(target); book(target, "member", operation === "switchGroup" && payload.sweeper === true); break;
+      const original = next.bookings.find(b => b.runId === run!.id && b.memberId === target && b.status !== "cancelled");
+      if (operation === "moveRunner" && original?.source === "trial") {
+        if (original.groupId === group!.id) throw new Error("Choose another group.");
+        const source = next.groups.find(g => g.id === original.groupId)!;
+        const wasConfirmed = original.status === "confirmed";
+        original.status = "cancelled";
+        original.version++;
+        if (wasConfirmed) promote(source.id);
+        else queueEvent("withdrawn", source.id, original.memberId);
+        source.version++;
+        const booking: PlatformSnapshot["bookings"][number] = {
+          id: `demo-booking-${requestId}`, runId: run!.id, groupId: group!.id, memberId: target,
+          status: nextBookingStatus(group!, next.bookings), source: "trial", guestName: original.guestName,
+          bookedAt: now.toISOString(), version: 1,
+        };
+        next.bookings.push(booking);
+        if (booking.status === "waitlisted") queueEvent("waitlistJoined", group!.id, target);
+        group!.version++;
+        payload = { ...payload, memberId: target };
+      } else {
+        leave(target); book(target, "member", operation === "switchGroup" && payload.sweeper === true);
+      }
+      break;
     }
     case "createWeek": {
       requireAdmin();

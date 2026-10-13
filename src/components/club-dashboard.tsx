@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { Group, Run } from "@/lib/domain";
+import type { Booking, Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
 import type { ClubMember, PlatformSnapshot } from "@/lib/platform-types";
 import { bookingPopularity, queuePosition, waitlistAnalytics, weeksLedBy } from "@/lib/analytics";
@@ -25,6 +25,9 @@ export function dateLabel(value: string, timeZone = "Europe/London") {
 }
 export function memberName(snapshot: PlatformSnapshot, id?: string) {
   return snapshot.members.find(m => m.id === id)?.name ?? (id ? "Club member" : "To be assigned");
+}
+export function bookingName(snapshot: PlatformSnapshot, booking: Booking) {
+  return booking.source === "trial" ? booking.guestName ?? "Trial runner" : memberName(snapshot, booking.memberId);
 }
 
 function mapsUrl(location: string, savedUrl?: string) {
@@ -192,10 +195,10 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
     <p><strong>Leader:</strong> {memberName(snapshot, group.leaderId)} · <strong>Sweeper:</strong> {memberName(snapshot, group.sweeperId)}</p>
     <h3>Route</h3><p className="route">{group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "Route not yet provided."}</p>
     <h3>Confirmed runners · {confirmed.length}/{group.capacity}</h3>
-    <ul className="roster">{confirmed.map(b => <li key={b.id}>{memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
+    <ul className="roster">{confirmed.map(b => <li key={b.id}>{bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
     <h3>Waitlist · {queue.length}</h3>
     <p>When a place opens while bookings are open, the first eligible queued runner is promoted automatically. No promotions happen at or after the cutoff. A queue place is not a confirmed booking.</p>
-    <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}</li>)}</ol>
+    <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}</li>)}</ol>
     {!queue.length && <p>No one waiting.</p>}
     <p className="hint">{dateLabel(run.startsAt)} · Attendance is recorded by your assigned leader, not inferred from booking.</p>
   </section>;
@@ -216,6 +219,7 @@ function LeaderGroup({ snapshot, run, group, mutate, pending, now }: { snapshot:
     <h3 className="subheading">Attendance roster</h3>
     <p className="hint">Unknown means no attendance has been recorded. Record outcomes after the run starts.</p>
     <ul className="roster attendance-roster">{confirmed.map(b => {
+      if (b.source === "trial") return <li key={b.id}><span>{bookingName(snapshot, b)} <span className="badge">Trial · attendance not tracked</span></span></li>;
       const outcome = snapshot.attendance.find(a => a.runId === run.id && a.memberId === b.memberId)?.outcome;
       return <li key={b.id}><span>{memberName(snapshot, b.memberId)} <span className="badge">{outcome ?? "unknown"}</span></span>
         <div className="actions">{(["present", "absent"] as const).map(o => <button key={o} className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} aria-pressed={outcome === o} onClick={() => void mutate("recordAttendance", { ...payload, memberId: b.memberId, outcome: o })}>{o === "present" ? "Present" : "Absent"}</button>)}</div>
@@ -295,7 +299,7 @@ function WeekTimeEditor({ snapshot, run, mutate, pending, now }: { snapshot: Pla
 }
 
 function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { snapshot: PlatformSnapshot; run?: Run; groups: Group[]; mutate: Mutate; pending: boolean; now: number; selectWeek: (id: string) => void }) {
-  const memberPageSize = 25;
+  const memberPageSize = 5;
   const configuredLocations = snapshot.config.locations?.length ? snapshot.config.locations : DEFAULT_LOCATIONS;
   const locationOptions = [...new Set([...configuredLocations, ...(snapshot.config.location && !/\bDEMO\b/i.test(snapshot.config.location) ? [snapshot.config.location] : [])])]
     .filter(location => location.trim().toLowerCase() !== "willett rec");
@@ -304,6 +308,8 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const [newWeekLocation, setNewWeekLocation] = useState(snapshot.config.location && locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "");
   const [moveMember, setMoveMember] = useState("");
   const [moveGroup, setMoveGroup] = useState("");
+  const [trialName, setTrialName] = useState("");
+  const [trialGroup, setTrialGroup] = useState("");
   const [search, setSearch] = useState("");
   const [memberPage, setMemberPage] = useState(0);
   const [newLocation, setNewLocation] = useState("");
@@ -458,19 +464,28 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </div>)}</div>
     </section>}
     {run && <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
-      <summary>Runner moves</summary>
+      <summary>Runner moves & trial runners</summary>
       <div className="disclosure-content"><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === moveGroup);
         if (destination) void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember });
       }}>
         <SearchableSelect label="Runner" value={moveMember} placeholder="Select runner"
-          options={snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && b.source !== "assignment")
-            .map(b => ({ value: b.memberId, label: memberName(snapshot, b.memberId) }))}
+          options={snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && (b.source === "member" || b.source === "trial"))
+            .map(b => ({ value: b.memberId, label: bookingName(snapshot, b) }))}
           onChange={setMoveMember} />
         <SearchableSelect label="Destination" value={moveGroup} placeholder="Select group"
           options={groups.map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setMoveGroup} />
         <button disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</button>
+      </form><h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
+        e.preventDefault(); const destination = groups.find(g => g.id === trialGroup);
+        if (destination && trialName.trim()) void mutate("addTrialRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, trialName: trialName.trim() });
+      }}>
+        <label htmlFor="trial-runner-name">Trial runner name<input id="trial-runner-name" required maxLength={100} value={trialName} onChange={event => setTrialName(event.target.value)} /></label>
+        <SearchableSelect label="Group" value={trialGroup} placeholder="Select group"
+          options={groups.filter(g => !g.cancelled).map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
+          onChange={setTrialGroup} />
+        <button disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</button>
       </form></div>
     </details></section>}
     <section className="panel attendance-panel"><details className="admin-disclosure" suppressHydrationWarning>

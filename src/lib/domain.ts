@@ -40,7 +40,8 @@ export interface Booking extends Versioned {
   memberId: string;
   status: BookingStatus;
   bookedAt: string;
-  source: "member" | "assignment";
+  source: "member" | "assignment" | "trial";
+  guestName?: string;
 }
 
 export interface Assignment extends Versioned {

@@ -54,6 +54,16 @@ backend, not accepted from the browser. Successful request IDs are replay-safe.
 This creates membership only, not an authentication account. Existing sign-in
 still requires an active roster entry and never onboards arbitrary visitors.
 
+## Add A Trial Runner
+
+In the selected run's **Runner moves** disclosure, enter a trial runner's name
+and choose a group. This is available to administrators while bookings are open.
+It creates a booking-level trial identity, not a member row, email address, or
+site account. The booking counts toward capacity and joins the waitlist if the
+group is full. Trial names are visible only to administrators; other roster
+views show a generic trial-runner label. Trial bookings do not have attendance
+records because attendance is keyed to member identities.
+
 ## Leader Preview And Apply
 
 `POST /api/admin/leaders/preview` takes no body or caller identity. It requires a

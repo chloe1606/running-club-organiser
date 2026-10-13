@@ -24,7 +24,14 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending, now }: {
     <div className="grid">{groups.map(group => {
       const count = confirmedCount(group.id, snapshot.bookings);
       const spaces = Math.max(0, group.capacity - count);
-      const waitlist = snapshot.bookings.filter(b => b.groupId === group.id && b.status === "waitlisted").length;
+      const groupBookings = snapshot.bookings.filter(booking => booking.groupId === group.id);
+      const confirmedRunners = groupBookings.filter(booking => booking.status === "confirmed");
+      const waitingRunners = groupBookings.filter(booking => booking.status === "waitlisted")
+        .sort((a, b) => a.bookedAt.localeCompare(b.bookedAt) || a.id.localeCompare(b.id));
+      const runnerName = (booking: typeof groupBookings[number]) => booking.source === "trial"
+        ? booking.guestName ?? "Trial runner"
+        : snapshot.members.find(member => member.id === booking.memberId)?.name ?? "Club member";
+      const waitlist = waitingRunners.length;
       const mine = own?.groupId === group.id;
       const groupCancelled = group.cancelled === true;
       const availability = groupCancelled ? "group-closed-badge" : spaces === 0 ? "full" : spaces < 5 ? "amber" : "green";
@@ -39,7 +46,17 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending, now }: {
         <div className="volunteers"><p>Leader · <strong>{leader ?? (group.leaderId ? "Assigned club leader" : "To be assigned")}</strong></p><p>Sweeper · {sweeper ?? (group.sweeperId ? "Assigned club member" : "Not assigned")}</p><p className="route-summary">Route · {group.routeNeedsReview ? "Needs review" : group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "To be confirmed"}</p></div>
         {snapshot.currentMemberId && canVolunteerAsSweeper && !mine && !groupCancelled && <label className="check sweeper-opt-in"><input type="checkbox" checked={sweeperOptIn} disabled={pending || !open || spaces === 0} onChange={event => setSweeperOptIns(value => ({ ...value, [group.id]: event.target.checked }))} />I can be this group’s sweeper</label>}
         {snapshot.currentMemberId && canVolunteerAsSweeper && sweeperOptIn && spaces === 0 && !mine && <p className="hint">Sweeper volunteers need a confirmed place; this group is full.</p>}
-        {snapshot.currentMemberId ? <Link className="details-link" href={`/groups/${encodeURIComponent(group.id)}`}>Route, runners & waitlist →</Link> : <Link href="/auth/signin">Sign in for group details</Link>}
+        {snapshot.currentMemberId ? <details className="runner-roster">
+          <summary className="details-link">Runners &amp; Waitlist</summary>
+          <div className="runner-roster-panel" aria-label={`Runners and waitlist for ${group.name ?? `Group ${group.number}`}`}>
+            <section><h4>Runners · {confirmedRunners.length}</h4>
+              {confirmedRunners.length ? <ul>{confirmedRunners.map(booking => <li key={booking.id}>{runnerName(booking)}{booking.source === "trial" ? " · trial" : ""}</li>)}</ul> : <p>No confirmed runners.</p>}
+            </section>
+            <section><h4>Waitlist · {waitingRunners.length}</h4>
+              {waitingRunners.length ? <ol>{waitingRunners.map(booking => <li key={booking.id}>{runnerName(booking)}{booking.source === "trial" ? " · trial" : ""}</li>)}</ol> : <p>No one waiting.</p>}
+            </section>
+          </div>
+        </details> : <Link className="details-link" href="/auth/signin">Sign in to view Runners &amp; Waitlist</Link>}
         {groupCancelled ? <p className="group-cancelled-message">This group is not running this week.</p> : snapshot.currentMemberId ? <button disabled={pending || !open || own?.source === "assignment"} className={mine ? "secondary" : ""} onClick={() => {
           if (own && !mine && !spaces && !window.confirm("This group is full. Switching will release your current booking or queue place and join the destination waitlist. You will not have a confirmed place. Continue?")) return;
           void mutate(mine ? "leave" : own ? "switchGroup" : "book", mine
