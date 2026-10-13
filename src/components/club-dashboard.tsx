@@ -379,12 +379,19 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     if (newWeekLocation === locationToRemove) setNewWeekLocation(location);
   }
   return <div className="stack admin-dashboard">
-    <section className="panel"><h2>{run ? `${run.id === nextRun?.id ? "Next Tuesday" : "Selected Tuesday"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Next Tuesday"}</h2>
+    <section className="panel next-tuesday-panel"><h2>{run ? `${run.id === nextRun?.id ? "Next Tuesday" : "Selected Tuesday"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Next Tuesday"}</h2>
       {run && <div className="selected-run-summary">
         <p><strong>{run.location ?? snapshot.config.location}</strong> · {new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.startsAt))} · <span className={`badge ${run.status}`}>{run.status}</span></p>
         <p><strong>Leader readiness: {runningGroups.length - missingLeaders.length}/{runningGroups.length}</strong> running groups</p>
         {missingLeaders.length > 0 ? <p className="hint">Missing leaders: {missingLeaders.map(group => `Group ${group.number}`).join(", ")}. <a href="#volunteers">Assign leaders</a></p> : <p className="hint">{runningGroups.length ? "All running groups have an eligible leader." : "No groups are running."}</p>}
       </div>}
+      {snapshot.weeks.some(week => week.status === "draft" && Date.parse(week.startsAt) > now) && <><h3>Upcoming drafts</h3>
+      <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
+        const blockers = publicationBlockers(snapshot, week, new Date(now));
+        const due = Date.parse(sundayPublicationAt(week, snapshot.config)) <= now;
+        return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}</span></li>;
+      })}</ul></>}
+      <details className="admin-disclosure advanced-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
       <WeeklyLeaderImport snapshot={snapshot} mutate={mutate} pending={pending} />
       <details className="admin-disclosure" suppressHydrationWarning><summary>Automation and schedule · {snapshot.config.weeklyAutomationEnabled ? "On" : "Off"}</summary><div className="disclosure-content">
       <div className="automation-health" aria-label="Automation health">
@@ -405,13 +412,6 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <p className="hint">{snapshot.demo ? "Demo automation is process-local; no live timer or workbook is used." : "The workbook owner must install the Apps Script timer before unattended scheduling can run."}</p>
       </div></details>
       </div></details>
-      {snapshot.weeks.some(week => week.status === "draft" && Date.parse(week.startsAt) > now) && <><h3>Upcoming drafts</h3>
-      <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
-        const blockers = publicationBlockers(snapshot, week, new Date(now));
-        const due = Date.parse(sundayPublicationAt(week, snapshot.config)) <= now;
-        return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}</span></li>;
-      })}</ul></>}
-      <details className="admin-disclosure advanced-controls" suppressHydrationWarning><summary>Advanced controls</summary><div className="disclosure-content">
       <details className="admin-disclosure" suppressHydrationWarning><summary>Create an additional draft manual run</summary><div className="disclosure-content"><form className="inline-form" onSubmit={create}>
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
       <label>Location for new week<select required value={newWeekLocation} disabled={!locationOptions.length} onChange={e => setNewWeekLocation(e.target.value)}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
@@ -422,7 +422,6 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         <button disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
         <button className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</button>
       </div></>}
-      </div></details>
     {run && ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="week-location-panel">
       <details className="admin-disclosure" suppressHydrationWarning>
         <summary>Location and time for this week</summary>
@@ -435,6 +434,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </details>
       <CancelRun runId={run.id} runVersion={run.version} mutate={mutate} pending={pending} />
     </div>}
+      </div></details>
     </section>
     {run && <section className="panel" id="volunteers"><h2>Volunteers</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
       <div className="assignment-grid">{groups.map(g => <div className="admin-group-assignment" key={g.id}>

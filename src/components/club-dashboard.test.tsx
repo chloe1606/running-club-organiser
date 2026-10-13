@@ -115,6 +115,15 @@ describe("leader attendance clock", () => {
     const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
     const html = renderAdmin();
     expect(html).toContain("Next Tuesday ·");
+    expect(html).toContain('class="panel next-tuesday-panel"');
+    const advancedStart = html.indexOf('<details class="admin-disclosure advanced-controls"');
+    const volunteersStart = html.indexOf('<section class="panel" id="volunteers">');
+    const advancedHtml = html.slice(advancedStart, volunteersStart);
+    expect(advancedHtml).toContain("<summary>Automation and schedule");
+    expect(advancedHtml).toContain("<summary>Create an additional draft manual run</summary>");
+    expect(advancedHtml.match(/<details/g)).toHaveLength(advancedHtml.match(/<\/details>/g)?.length ?? 0);
+    expect(html.indexOf("<summary>Runner moves &amp; trial runners</summary>")).toBeGreaterThan(volunteersStart);
+    expect(html.indexOf("<summary>Group popularity</summary>")).toBeGreaterThan(volunteersStart);
     expect(html).toContain("Leader readiness:");
     expect(html).toContain("<dt>Last successful check</dt>");
     expect(html).toContain("Automation and schedule");

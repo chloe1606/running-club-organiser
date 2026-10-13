@@ -293,6 +293,7 @@ th { background: #edf5f2; }
 .admin-dashboard .panel { box-shadow: none; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 1.25rem 0; }
 .admin-dashboard .panel:first-child { border-top: 0; padding-top: 0; }
 .admin-dashboard h2 { font-size: 1.35rem; }
+.admin-dashboard .next-tuesday-panel > h2 { font-size: 1.75rem; }
 .selected-run-summary { border-left: 4px solid var(--club-accent); padding-left: .85rem; margin: 1rem 0; }
 .selected-run-summary p, .automation-health p { overflow-wrap: anywhere; }
 .automation-health { border-top: 1px solid var(--line); padding-top: .85rem; margin-top: 1rem; font-size: .88rem; }
