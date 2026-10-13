@@ -656,6 +656,39 @@ describe("Apps Script locked gateway", () => {
     expect(app.state().bookings.filter((entry) => entry.status === "confirmed")).toHaveLength(1);
     expect(app.isLocked()).toBe(false);
   });
+  it("adds a named trial booking without membership and promotes it from the waitlist", () => {
+    const initial = fixture();
+    initial.bookings.push(booking("existing", "one"));
+    const app = harness(initial);
+    const add = { operation: "addTrialRunner", requestId: requestId(28), runId: "run", runVersion: 1,
+      groupId: "g1", groupVersion: 1, trialName: "  Taylor Trial  " };
+    expect(app.post({ ...add, email: "one@example.org" })).toMatchObject({ ok: false, code: "FORBIDDEN" });
+    expect(app.post({ ...add, email: "admin@example.org" })).toMatchObject({ ok: true, data: { status: "waitlisted" } });
+    let trial = app.state().bookings.find((entry) => entry.source === "trial")!;
+    expect(trial).toMatchObject({ guestName: "Taylor Trial", status: "waitlisted", memberId: expect.stringMatching(/^trial-/) });
+    expect(app.state().members.some((member) => member.id === trial.memberId)).toBe(false);
+    expect(app.workbook.getSheetByName("Week_run")?.cells[2][1]).toBe("Taylor Trial");
+    expect(app.post({ operation: "leave", email: "one@example.org", requestId: requestId(29), runId: "run", runVersion: 2 }))
+      .toMatchObject({ ok: true });
+    trial = app.state().bookings.find((entry) => entry.source === "trial")!;
+    expect(trial.status).toBe("confirmed");
+  });
+  it("moves a waitlisted trial booking without losing its name or creating membership", () => {
+    const initial = fixture();
+    initial.bookings.push(booking("existing", "one"));
+    const app = harness(initial);
+    const add = { operation: "addTrialRunner", requestId: requestId(30), runId: "run", runVersion: 1,
+      groupId: "g1", groupVersion: 1, trialName: "Taylor Trial", email: "admin@example.org" };
+    expect(app.post(add)).toMatchObject({ ok: true, data: { status: "waitlisted" } });
+    const trial = app.state().bookings.find((entry) => entry.source === "trial")!;
+    expect(app.post({ operation: "moveRunner", requestId: requestId(31), email: "admin@example.org", runId: "run",
+      runVersion: 2, groupId: "g2", groupVersion: 1, memberId: trial.memberId })).toMatchObject({ ok: true, data: { status: "confirmed" } });
+    const bookings = app.state().bookings.filter((entry) => entry.memberId === trial.memberId);
+    expect(bookings).toHaveLength(2);
+    expect(bookings[0].status).toBe("cancelled");
+    expect(bookings[1]).toMatchObject({ groupId: "g2", status: "confirmed", source: "trial", guestName: "Taylor Trial" });
+    expect(app.state().members.some((member) => member.id === trial.memberId)).toBe(false);
+  });
   it("replays successful request IDs before checking stale versions but rejects conflicting reuse", () => {
     const app = harness(fixture());
     expect(app.mutate().ok).toBe(true);

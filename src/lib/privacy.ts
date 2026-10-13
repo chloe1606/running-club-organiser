@@ -12,7 +12,7 @@ export function visibleSnapshot(snapshot: PlatformSnapshot, memberId?: string): 
       bookings: snapshot.bookings.filter((booking) =>
         booking.status !== "cancelled" && snapshot.weeks.some((week) => week.id === booking.runId && week.status === "published"))
         .map((booking, index) => ({
-          ...booking, id: `count-${index}`, memberId: `anonymous-${index}`, bookedAt: "", source: "member",
+          ...booking, id: `count-${index}`, memberId: `anonymous-${index}`, bookedAt: "", source: "member", guestName: undefined,
         })),
       members: [], attendance: [], audit: [],
     };
@@ -24,7 +24,8 @@ export function visibleSnapshot(snapshot: PlatformSnapshot, memberId?: string): 
     snapshot.weeks.some((week) => week.id === group.runId && week.status !== "draft") || assigned.has(group.id));
   const ownWeeks = new Set(snapshot.bookings.filter((booking) => booking.memberId === member.id).map((booking) => booking.runId));
   const bookings = snapshot.bookings.filter((booking) =>
-    booking.memberId === member.id || published.has(booking.runId) || assigned.has(booking.groupId));
+    booking.memberId === member.id || published.has(booking.runId) || assigned.has(booking.groupId))
+    .map((booking) => booking.source === "trial" ? { ...booking, guestName: undefined } : booking);
   return {
     ...snapshot,
     currentMemberId: member.id,

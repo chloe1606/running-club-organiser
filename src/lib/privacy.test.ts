@@ -12,10 +12,11 @@ const fixture: PlatformSnapshot = {
   members: ["r", "l", "a", "d"].map((id) => ({
     id, email: `${id}@example.com`, name: `Demo ${id}`, roles: [id === "a" ? "admin" : id === "l" ? "leader" : "runner"], active: id !== "d", version: 1,
   })),
-  bookings: ["w0", "w1"].flatMap((runId) => ["r", "l"].map((memberId) => ({
+  bookings: [...["w0", "w1"].flatMap((runId) => ["r", "l"].map((memberId) => ({
     id: `${runId}-${memberId}`, runId, groupId: runId === "w0" ? "g" : "history", memberId,
     status: "confirmed" as const, source: "member" as const, bookedAt: "private", version: 1,
-  }))),
+  }))), { id: "trial-booking", runId: "w0", groupId: "g", memberId: "trial-one", guestName: "Private Trial Name",
+    status: "confirmed" as const, source: "trial" as const, bookedAt: "private", version: 1 }],
   attendance: ["r", "l"].map((memberId) => ({ id: memberId, runId: "w1", groupId: "history", memberId, outcome: "present", recordedAt: "" })),
   audit: [{ id: "audit", runId: "w0", actorId: "a", action: "move", at: "", requestId: "id" }],
 };
@@ -27,8 +28,8 @@ describe("server data minimization", () => {
     expect(result.attendance).toEqual([]);
     expect(result.audit).toEqual([]);
     expect(result.weeks).toHaveLength(2);
-    expect(result.bookings).toHaveLength(2);
-    expect(result.bookings.every((booking) => booking.memberId.startsWith("anonymous") && !booking.bookedAt)).toBe(true);
+    expect(result.bookings).toHaveLength(3);
+    expect(result.bookings.every((booking) => booking.memberId.startsWith("anonymous") && !booking.bookedAt && !booking.guestName)).toBe(true);
   });
   it("limits runner private history to their own", () => {
     const result = visibleSnapshot(fixture, "r");
@@ -37,9 +38,12 @@ describe("server data minimization", () => {
     expect(result.members.find((member) => member.id === "l")?.email).toBe("");
     expect(result.members.some((member) => member.id === "d")).toBe(false);
     expect(result.audit).toEqual([]);
+    expect(result.bookings.find((booking) => booking.source === "trial")?.guestName).toBeUndefined();
   });
   it("treats deactivated identities as public, grants admin only trusted roles", () => {
     expect(visibleSnapshot(fixture, "d").members).toEqual([]);
-    expect(visibleSnapshot(fixture, "a").audit).toHaveLength(1);
+    const admin = visibleSnapshot(fixture, "a");
+    expect(admin.audit).toHaveLength(1);
+    expect(admin.bookings.find((booking) => booking.source === "trial")?.guestName).toBe("Private Trial Name");
   });
 });

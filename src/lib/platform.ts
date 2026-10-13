@@ -40,7 +40,7 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
   if (!session?.user?.email) throw new GatewayError("Sign in to continue.", 401, "UNAUTHORIZED");
   const member = await findActiveMemberByEmail(session.user.email);
   if (!member) throw new GatewayError("Active club membership is required.", 403, "FORBIDDEN");
-  const adminOperations = ["moveRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "importWeeklyLeaders"];
+  const adminOperations = ["moveRunner", "addTrialRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "importWeeklyLeaders"];
   if (adminOperations.includes(mutation.operation) && !member.roles.split(",").map((role) => role.trim()).includes("admin")) {
     throw new GatewayError("Administrator access is required.", 403, "FORBIDDEN");
   }

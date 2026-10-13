@@ -141,7 +141,7 @@ function runWeeklyAutomation() {
 function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   const operation = request.operation;
   const admin = actor.roles.includes("admin");
-  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "moveRunner", "updateLocations"];
+  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "moveRunner", "addTrialRunner", "updateLocations"];
   if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
   let run;
   let group;
@@ -346,6 +346,20 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         run.status = "archived";
         result = { status: run.status };
         break;
+      case "addTrialRunner": {
+        assertBookingOpen_(run, now);
+        const guestName = String(request.trialName || "").trim();
+        if (!guestName || guestName.length > 100) fail_("INVALID_TRIAL_RUNNER", "Enter a trial runner name up to 100 characters.");
+        const booking = {
+          id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId: "trial-" + Utilities.getUuid(),
+          status: occupantCount_(snapshot, group) < bookingCapacity_(group) ? "confirmed" : "waitlisted",
+          source: "trial", guestName, bookedAt: now.toISOString(), version: 1,
+        };
+        snapshot.bookings.push(booking);
+        if (booking.status === "waitlisted") queueAudit_(snapshot, booking, "waitlistJoined", auditContext);
+        result = { bookingId: booking.id, status: booking.status };
+        break;
+      }
       case "book":
       case "leave":
       case "switchGroup":
@@ -353,9 +367,10 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         if (operation !== "moveRunner" && !actor.roles.includes("runner")) fail_("FORBIDDEN", "Only runners can manage bookings.");
         assertBookingOpen_(run, now);
         const memberId = operation === "moveRunner" ? request.memberId : actor.id;
-        const member = snapshot.members.find((entry) => entry.id === memberId && entry.active && entry.roles.includes("runner"));
-        if (!member) fail_("FORBIDDEN", "The runner is not an active eligible member.");
         const original = snapshot.bookings.find((entry) => entry.runId === run.id && entry.memberId === memberId && entry.status !== "cancelled");
+        const trial = operation === "moveRunner" && original && original.source === "trial";
+        const member = snapshot.members.find((entry) => entry.id === memberId && entry.active && entry.roles.includes("runner"));
+        if (!member && !trial) fail_("FORBIDDEN", "The runner is not an active eligible member.");
         if (operation === "book" && original) fail_("DUPLICATE_BOOKING", "You already have a booking for this run.");
         if (operation !== "book" && !original) fail_("NOT_FOUND", "There is no active booking to change.");
         const isLeader = snapshot.groups.some((entry) => entry.runId === run.id && entry.leaderId === memberId);
@@ -364,7 +379,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         if ((original && original.source === "assignment") || isLeader || (sweeperGroup && !ownsSweeperVolunteerRole)) {
           fail_("ASSIGNMENT_EXISTS", "An administrator must remove the assignment before this runner can change groups.");
         }
-        if (request.sweeper === true && !member.roles.includes("sweeper")) fail_("FORBIDDEN", "An active sweeper role is required to volunteer.");
+          if (request.sweeper === true && (!member || !member.roles.includes("sweeper"))) fail_("FORBIDDEN", "An active sweeper role is required to volunteer.");
         if (operation === "leave") {
           if (original.groupId !== group.id) fail_("WRONG_GROUP", "The booking is not in this group.");
           if (group.sweeperId === memberId && original.source === "member") delete group.sweeperId;
@@ -392,7 +407,8 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
           const booking = {
             id: Utilities.getUuid(), runId: run.id, groupId: group.id, memberId,
             status,
-            source: "member", bookedAt: now.toISOString(), version: 1,
+            source: trial ? "trial" : "member", ...(trial ? { guestName: original.guestName } : {}),
+            bookedAt: now.toISOString(), version: 1,
           };
           snapshot.bookings.push(booking);
           if (booking.status === "waitlisted") queueAudit_(snapshot, booking, "waitlistJoined", auditContext);
@@ -491,7 +507,9 @@ function promoteQueue_(snapshot, group, now, auditContext) {
     .sort((a, b) => new Date(a.bookedAt).getTime() - new Date(b.bookedAt).getTime() || a.id.localeCompare(b.id));
   for (const booking of queue) {
     const member = snapshot.members.find((entry) => entry.id === booking.memberId && entry.active && entry.roles.includes("runner"));
-    if (!member) { cancelBooking_(snapshot, booking, auditContext); continue; }
+    if (booking.source !== "trial" && !member || booking.source === "trial" && !String(booking.guestName || "").trim()) {
+      cancelBooking_(snapshot, booking, auditContext); continue;
+    }
     if (occupantCount_(snapshot, group) >= bookingCapacity_(group)) break;
     booking.status = "confirmed";
     booking.version++;

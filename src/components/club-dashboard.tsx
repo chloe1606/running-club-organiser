@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { Group, Run } from "@/lib/domain";
+import type { Booking, Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
 import type { ClubMember, PlatformSnapshot } from "@/lib/platform-types";
 import { bookingPopularity, queuePosition, waitlistAnalytics, weeksLedBy } from "@/lib/analytics";
@@ -19,12 +19,15 @@ import { WeeklyLeaderImport } from "./weekly-leader-import";
 import { canAssignLeaderToGroup } from "@/lib/leader-availability";
 import { clubDate, clubDateTime, nextTuesdayDate, publicationBlockers, sundayPublicationAt, updateRunTime } from "@/lib/schedule";
 
-export type Mutate = (operation: string, payload: Record<string, unknown>) => Promise<void>;
+export type Mutate = (operation: string, payload: Record<string, unknown>, onSuccess?: () => void) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
   return new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(new Date(value));
 }
 export function memberName(snapshot: PlatformSnapshot, id?: string) {
   return snapshot.members.find(m => m.id === id)?.name ?? (id ? "Club member" : "To be assigned");
+}
+export function bookingName(snapshot: PlatformSnapshot, booking: Booking) {
+  return booking.source === "trial" ? booking.guestName ?? "Trial runner" : memberName(snapshot, booking.memberId);
 }
 
 function mapsUrl(location: string, savedUrl?: string) {
@@ -76,7 +79,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   const historicalWeeks = availableWeeks.filter(week => !activeWeeks.some(active => active.id === week.id));
   const pickerWeeks = view === "runs" ? [...activeWeeks, ...(run && historicalWeeks.includes(run) ? [run] : [])] : availableWeeks;
   const meetingLocation = run?.location ?? snapshot.config.location;
-  const mutate: Mutate = async (operation, payload) => {
+  const mutate: Mutate = async (operation, payload, onSuccess) => {
     if (pending) return;
     const intent = JSON.stringify([operation, Object.keys(payload).filter(key => !key.endsWith("Version")).sort().map(key => [key, payload[key]])]);
     const existing = uncertainRequests.current.get(intent);
@@ -95,6 +98,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
       uncertainRequests.current.delete(intent); setRetry(undefined);
       setSnapshot(body.data);
       setMessage("Saved. Your club data is up to date.");
+      onSuccess?.();
     } catch (error) {
       const uncertain = uncertainRequests.current.has(intent);
       setRetry(uncertain ? request : undefined);
@@ -153,7 +157,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     {(view !== "runs" && !snapshot.currentMemberId) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/auth/signin">Sign in</Link></section> :
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
-      view === "profile" ? <Profile snapshot={snapshot} /> : <>
+      view === "profile" ? <Profile snapshot={snapshot} now={now} /> : <>
         <section className="week-bar" aria-label="Selected week">
           <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || (view === "leader" && !leaderWeeks.length)} value={effectiveSelectedId} onChange={e => setSelectedId(e.target.value)}>
             {pickerWeeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt, snapshot.config.timeZone)} · {runnerView ? runnerStatus(w, now) : w.status}</option>)}
@@ -192,10 +196,10 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
     <p><strong>Leader:</strong> {memberName(snapshot, group.leaderId)} · <strong>Sweeper:</strong> {memberName(snapshot, group.sweeperId)}</p>
     <h3>Route</h3><p className="route">{group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "Route not yet provided."}</p>
     <h3>Confirmed runners · {confirmed.length}/{group.capacity}</h3>
-    <ul className="roster">{confirmed.map(b => <li key={b.id}>{memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
+    <ul className="roster">{confirmed.map(b => <li key={b.id}>{bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
     <h3>Waitlist · {queue.length}</h3>
     <p>When a place opens while bookings are open, the first eligible queued runner is promoted automatically. No promotions happen at or after the cutoff. A queue place is not a confirmed booking.</p>
-    <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {memberName(snapshot, b.memberId)}{b.memberId === snapshot.currentMemberId && " (you)"}</li>)}</ol>
+    <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}</li>)}</ol>
     {!queue.length && <p>No one waiting.</p>}
     <p className="hint">{dateLabel(run.startsAt)} · Attendance is recorded by your assigned leader, not inferred from booking.</p>
   </section>;
@@ -216,6 +220,7 @@ function LeaderGroup({ snapshot, run, group, mutate, pending, now }: { snapshot:
     <h3 className="subheading">Attendance roster</h3>
     <p className="hint">Unknown means no attendance has been recorded. Record outcomes after the run starts.</p>
     <ul className="roster attendance-roster">{confirmed.map(b => {
+      if (b.source === "trial") return <li key={b.id}><span>{bookingName(snapshot, b)} <span className="badge">Trial · attendance not tracked</span></span></li>;
       const outcome = snapshot.attendance.find(a => a.runId === run.id && a.memberId === b.memberId)?.outcome;
       return <li key={b.id}><span>{memberName(snapshot, b.memberId)} <span className="badge">{outcome ?? "unknown"}</span></span>
         <div className="actions">{(["present", "absent"] as const).map(o => <button key={o} className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} aria-pressed={outcome === o} onClick={() => void mutate("recordAttendance", { ...payload, memberId: b.memberId, outcome: o })}>{o === "present" ? "Present" : "Absent"}</button>)}</div>
@@ -234,7 +239,7 @@ function RouteEditor({ run, group, mutate, pending, now }: { run: Run; group: Gr
   </form>;
 }
 
-function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
+function Profile({ snapshot, now }: { snapshot: PlatformSnapshot; now: number }) {
   const id = snapshot.currentMemberId!;
   const bookings = snapshot.bookings.filter(b => b.memberId === id).sort((a, b) => (snapshot.weeks.find(r => r.id === b.runId)?.startsAt ?? "").localeCompare(snapshot.weeks.find(r => r.id === a.runId)?.startsAt ?? ""));
   const confirmedBookings = bookings.filter(booking => booking.status === "confirmed" &&
@@ -258,7 +263,11 @@ function Profile({ snapshot }: { snapshot: PlatformSnapshot }) {
       const run = snapshot.weeks.find(r => r.id === b.runId);
       const group = snapshot.groups.find(g => g.id === b.groupId);
       const outcome = snapshot.attendance.find(a => a.runId === b.runId && a.memberId === id)?.outcome;
-      return <tr key={b.id}><td>{run ? dateLabel(run.startsAt) : b.runId}</td><td><Link href={`/groups/${encodeURIComponent(b.groupId)}`}>Group {group?.number ?? "—"}</Link></td><td>{b.status}{b.status === "waitlisted" && ` · queue #${queuePosition(snapshot, b.groupId, id)}`}</td><td>{outcome ?? "Unknown / not recorded"}</td></tr>;
+      const groupLabel = `Group ${group?.number ?? "—"}`;
+      const groupCell = run && run.status !== "archived" && Date.parse(run.startsAt) >= now
+        ? <Link href={`/groups/${encodeURIComponent(b.groupId)}`}>{groupLabel}</Link>
+        : groupLabel;
+      return <tr key={b.id}><td>{run ? dateLabel(run.startsAt) : b.runId}</td><td>{groupCell}</td><td>{b.status}{b.status === "waitlisted" && ` · queue #${queuePosition(snapshot, b.groupId, id)}`}</td><td>{outcome ?? "Unknown / not recorded"}</td></tr>;
     })}</tbody></table></div>
     {!bookings.length && <p className="notice">Your first club run starts here. Choose a pace group to join.</p>}
   </section>;
@@ -295,7 +304,7 @@ function WeekTimeEditor({ snapshot, run, mutate, pending, now }: { snapshot: Pla
 }
 
 function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { snapshot: PlatformSnapshot; run?: Run; groups: Group[]; mutate: Mutate; pending: boolean; now: number; selectWeek: (id: string) => void }) {
-  const memberPageSize = 25;
+  const memberPageSize = 5;
   const configuredLocations = snapshot.config.locations?.length ? snapshot.config.locations : DEFAULT_LOCATIONS;
   const locationOptions = [...new Set([...configuredLocations, ...(snapshot.config.location && !/\bDEMO\b/i.test(snapshot.config.location) ? [snapshot.config.location] : [])])]
     .filter(location => location.trim().toLowerCase() !== "willett rec");
@@ -304,6 +313,10 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const [newWeekLocation, setNewWeekLocation] = useState(snapshot.config.location && locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "");
   const [moveMember, setMoveMember] = useState("");
   const [moveGroup, setMoveGroup] = useState("");
+  const [moveMessage, setMoveMessage] = useState("");
+  const [trialName, setTrialName] = useState("");
+  const [trialGroup, setTrialGroup] = useState("");
+  const [trialMessage, setTrialMessage] = useState("");
   const [search, setSearch] = useState("");
   const [memberPage, setMemberPage] = useState(0);
   const [newLocation, setNewLocation] = useState("");
@@ -373,12 +386,19 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     if (newWeekLocation === locationToRemove) setNewWeekLocation(location);
   }
   return <div className="stack admin-dashboard">
-    <section className="panel"><h2>{run ? `${run.id === nextRun?.id ? "Next Tuesday" : "Selected Tuesday"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Next Tuesday"}</h2>
+    <section className="panel next-tuesday-panel"><h2>{run ? `${run.id === nextRun?.id ? "Next Tuesday" : "Selected Tuesday"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Next Tuesday"}</h2>
       {run && <div className="selected-run-summary">
         <p><strong>{run.location ?? snapshot.config.location}</strong> · {new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.startsAt))} · <span className={`badge ${run.status}`}>{run.status}</span></p>
         <p><strong>Leader readiness: {runningGroups.length - missingLeaders.length}/{runningGroups.length}</strong> running groups</p>
         {missingLeaders.length > 0 ? <p className="hint">Missing leaders: {missingLeaders.map(group => `Group ${group.number}`).join(", ")}. <a href="#volunteers">Assign leaders</a></p> : <p className="hint">{runningGroups.length ? "All running groups have an eligible leader." : "No groups are running."}</p>}
       </div>}
+      {snapshot.weeks.some(week => week.status === "draft" && Date.parse(week.startsAt) > now) && <><h3>Upcoming drafts</h3>
+      <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
+        const blockers = publicationBlockers(snapshot, week, new Date(now));
+        const due = Date.parse(sundayPublicationAt(week, snapshot.config)) <= now;
+        return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}</span></li>;
+      })}</ul></>}
+      <details className="admin-disclosure advanced-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
       <WeeklyLeaderImport snapshot={snapshot} mutate={mutate} pending={pending} />
       <details className="admin-disclosure" suppressHydrationWarning><summary>Automation and schedule · {snapshot.config.weeklyAutomationEnabled ? "On" : "Off"}</summary><div className="disclosure-content">
       <div className="automation-health" aria-label="Automation health">
@@ -399,13 +419,6 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <p className="hint">{snapshot.demo ? "Demo automation is process-local; no live timer or workbook is used." : "The workbook owner must install the Apps Script timer before unattended scheduling can run."}</p>
       </div></details>
       </div></details>
-      {snapshot.weeks.some(week => week.status === "draft" && Date.parse(week.startsAt) > now) && <><h3>Upcoming drafts</h3>
-      <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
-        const blockers = publicationBlockers(snapshot, week, new Date(now));
-        const due = Date.parse(sundayPublicationAt(week, snapshot.config)) <= now;
-        return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}</span></li>;
-      })}</ul></>}
-      <details className="admin-disclosure advanced-controls" suppressHydrationWarning><summary>Advanced controls</summary><div className="disclosure-content">
       <details className="admin-disclosure" suppressHydrationWarning><summary>Create an additional draft manual run</summary><div className="disclosure-content"><form className="inline-form" onSubmit={create}>
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
       <label>Location for new week<select required value={newWeekLocation} disabled={!locationOptions.length} onChange={e => setNewWeekLocation(e.target.value)}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
@@ -416,7 +429,6 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         <button disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
         <button className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</button>
       </div></>}
-      </div></details>
     {run && ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="week-location-panel">
       <details className="admin-disclosure" suppressHydrationWarning>
         <summary>Location and time for this week</summary>
@@ -429,6 +441,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </details>
       <CancelRun runId={run.id} runVersion={run.version} mutate={mutate} pending={pending} />
     </div>}
+      </div></details>
     </section>
     {run && <section className="panel" id="volunteers"><h2>Volunteers</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
       <div className="assignment-grid">{groups.map(g => <div className="admin-group-assignment" key={g.id}>
@@ -457,21 +470,42 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         </div>}
       </div>)}</div>
     </section>}
-    {run && <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
-      <summary>Runner moves</summary>
-      <div className="disclosure-content"><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
+    {run && <section className="panel"><details className="admin-disclosure runner-moves-disclosure" suppressHydrationWarning>
+      <summary>Runner moves & trial runners</summary>
+      <div className="disclosure-content"><h3 className="subheading">Move a runner</h3><p className="hint">Move a runner between groups. A full destination puts them on its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === moveGroup);
-        if (destination) void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember });
+        const runner = snapshot.bookings.find(booking => booking.runId === run.id && booking.memberId === moveMember && booking.status !== "cancelled");
+        if (destination && runner) {
+          setMoveMessage("");
+          void mutate("moveRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, memberId: moveMember }, () => {
+            setMoveMember(""); setMoveGroup(""); setMoveMessage(`Moved ${bookingName(snapshot, runner)} to Group ${destination.number}.`);
+          });
+        }
       }}>
         <SearchableSelect label="Runner" value={moveMember} placeholder="Select runner"
-          options={snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && b.source !== "assignment")
-            .map(b => ({ value: b.memberId, label: memberName(snapshot, b.memberId) }))}
+          options={snapshot.bookings.filter(b => b.runId === run.id && b.status !== "cancelled" && (b.source === "member" || b.source === "trial"))
+            .map(b => ({ value: b.memberId, label: bookingName(snapshot, b) }))}
           onChange={setMoveMember} />
         <SearchableSelect label="Destination" value={moveGroup} placeholder="Select group"
           options={groups.map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setMoveGroup} />
         <button disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</button>
-      </form></div>
+      </form>{moveMessage && <p className="notice" role="status">{moveMessage}</p>}<h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
+        e.preventDefault(); const destination = groups.find(g => g.id === trialGroup);
+        const name = trialName.trim();
+        if (destination && name) {
+          setTrialMessage("");
+          void mutate("addTrialRunner", { runId: run.id, runVersion: run.version, groupId: destination.id, groupVersion: destination.version, trialName: name }, () => {
+            setTrialName(""); setTrialGroup(""); setTrialMessage(`Added ${name} to Group ${destination.number}.`);
+          });
+        }
+      }}>
+        <label htmlFor="trial-runner-name">Trial runner name<input id="trial-runner-name" required maxLength={100} value={trialName} onChange={event => setTrialName(event.target.value)} /></label>
+        <SearchableSelect label="Group" value={trialGroup} placeholder="Select group"
+          options={groups.filter(g => !g.cancelled).map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
+          onChange={setTrialGroup} />
+        <button disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</button>
+      </form>{trialMessage && <p className="notice" role="status">{trialMessage}</p>}</div>
     </details></section>}
     <section className="panel attendance-panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Group popularity</summary>

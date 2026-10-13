@@ -538,7 +538,8 @@ function legacySnapshot_() {
   });
   snapshot.bookings = records_("Bookings").map((entry) => ({
     id: String(entry.bookingId), runId: String(entry.runId), groupId: String(entry.groupId), memberId: String(entry.memberId),
-    status: String(entry.status), source: entry.bookingSource === "assignment" ? "assignment" : "member",
+    status: String(entry.status), source: entry.bookingSource === "trial" ? "trial" : entry.bookingSource === "assignment" ? "assignment" : "member",
+    ...(entry.guestName ? { guestName: String(entry.guestName).trim() } : {}),
     bookedAt: isoValue_(entry.bookedAt), version: Number(entry.version || 1),
   }));
   snapshot.attendance = records_("Attendance").map((entry) => ({
@@ -635,8 +636,12 @@ function validatePlatform_(snapshot) {
   const active = new Set();
   snapshot.bookings.forEach((booking) => {
     const group = snapshot.groups.find((entry) => entry.id === booking.groupId);
-    if (!groups.has(booking.groupId) || !members.has(booking.memberId) || !weeks.has(booking.runId) || group.runId !== booking.runId ||
-        !["confirmed", "waitlisted", "cancelled"].includes(booking.status) || !["member", "assignment"].includes(booking.source) ||
+    const isTrial = booking.source === "trial";
+    const validIdentity = isTrial
+      ? !members.has(booking.memberId) && booking.memberId.indexOf("trial-") === 0 && typeof booking.guestName === "string" && !!booking.guestName.trim() && booking.guestName.length <= 100
+      : members.has(booking.memberId) && ["member", "assignment"].includes(booking.source) && booking.guestName === undefined;
+    if (!groups.has(booking.groupId) || !validIdentity || !weeks.has(booking.runId) || group.runId !== booking.runId ||
+        !["confirmed", "waitlisted", "cancelled"].includes(booking.status) ||
         !Number.isInteger(booking.version) || booking.version < 1 || !Number.isFinite(new Date(booking.bookedAt).getTime())) fail_("INVALID_DATA", "Invalid booking details.");
     if (booking.status !== "cancelled") {
       const key = booking.runId + ":" + booking.memberId;
@@ -706,7 +711,7 @@ function projectPlatform_(state) {
     const bookings = snapshot.bookings.filter((entry) => entry.runId === week.id).map((entry) => {
       const member = snapshot.members.find((candidate) => candidate.id === entry.memberId);
       const group = snapshot.groups.find((candidate) => candidate.id === entry.groupId);
-      return [group ? group.name || "Group " + group.number : "", member ? member.name : "", entry.status, entry.bookedAt,
+      return [group ? group.name || "Group " + group.number : "", member ? member.name : entry.guestName || "", entry.status, entry.bookedAt,
         entry.id, entry.runId, entry.groupId, entry.memberId, entry.source, entry.version];
     });
     const groups = snapshot.groups.filter((entry) => entry.runId === week.id).sort((a, b) => a.number - b.number)

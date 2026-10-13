@@ -35,9 +35,28 @@ describe("runner group UI", () => {
     expect(html).toContain("19/19 confirmed · Waitlist: 4");
     expect(html).toContain("Priya Shah");
     expect(html).toContain("Distance to be confirmed");
-    expect(html).toContain("Route · Needs review");
+    expect(html).toContain("Route · TBC");
+    expect(html).not.toContain("Needs review");
     expect(html).toContain("Join waitlist");
     expect(html).toContain("Join this group");
+  });
+  it("previews confirmed runners and waitlisted members in each signed-in group card", () => {
+    const { snapshot, groups } = fixture();
+    const html = render(snapshot);
+    const fullGroup = groups[2];
+    const card = html.split(`id="booking-${fullGroup.id}"`)[1].split("</article>")[0];
+    expect(card).toContain("Runners &amp; Waitlist");
+    expect(card).toContain("Runners · 19");
+    expect(card).toContain("Waitlist · 4");
+    expect(card).toContain("Jamie Brooks");
+    expect(card).not.toContain("Route, runners &amp; waitlist");
+  });
+  it("shows trial names in the signed-in roster preview", () => {
+    const { snapshot, run, groups } = fixture();
+    snapshot.bookings.push({ id: "trial-booking", runId: run.id, groupId: groups[0].id, memberId: "trial-preview",
+      guestName: "Taylor Trial", status: "confirmed", source: "trial", bookedAt: run.bookingOpensAt, version: 1 });
+    const card = render(snapshot).split(`id="booking-${groups[0].id}"`)[1].split("</article>")[0];
+    expect(card).toContain("Taylor Trial · trial");
   });
   it("shows an optional sweeper checkbox only to a member with the sweeper role", () => {
     const { snapshot } = fixture();
@@ -74,7 +93,8 @@ describe("runner group UI", () => {
     const html = render(snapshot);
     expect(html).toContain('href="/auth/signin"');
     expect(html).toContain("Sign in to book");
-    expect(html).toContain("Sign in for group details");
+    expect(html).toContain("Sign in to view Runners &amp; Waitlist");
+    expect(html).not.toContain("runner-roster-panel");
     expect(html).not.toContain("Route, runners &amp; waitlist");
     expect(html).not.toContain("@example.test");
     expect(html).not.toContain("<button");

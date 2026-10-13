@@ -37,6 +37,12 @@ describe("snapshot integrity", () => {
     expect(snapshotSchema.safeParse({ ...fixture, weeks: [{ ...fixture.weeks[0], location: "Willett Recreation Ground" }] }).success).toBe(true);
     expect(snapshotSchema.safeParse({ ...fixture, groups: fixture.groups.map((group) => ({ ...group, capacity: 20 })) }).success).toBe(true);
   });
+  it("allows named trial bookings without a member record", () => {
+    const trial = { ...fixture.bookings[0], id: "trial-booking", memberId: "trial-person", source: "trial", guestName: "Trial Runner" };
+    expect(snapshotSchema.safeParse({ ...fixture, bookings: [...fixture.bookings, trial] }).success).toBe(true);
+    expect(snapshotSchema.safeParse({ ...fixture, bookings: [...fixture.bookings, { ...trial, guestName: undefined }] }).success).toBe(false);
+    expect(snapshotSchema.safeParse({ ...fixture, bookings: [...fixture.bookings, { ...trial, memberId: "m" }] }).success).toBe(false);
+  });
   it("rejects duplicate active identities and cross-week references", () => {
     expect(snapshotSchema.safeParse({ ...fixture, bookings: [...fixture.bookings, { ...fixture.bookings[0], id: "other" }] }).success).toBe(false);
     expect(snapshotSchema.safeParse({ ...fixture, bookings: [{ ...fixture.bookings[0], runId: "other" }] }).success).toBe(false);
@@ -75,6 +81,12 @@ describe("snapshot integrity", () => {
     expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: true }).success).toBe(true);
     expect(mutationSchema.safeParse({ operation: "switchGroup", ...base, sweeper: false }).success).toBe(true);
     expect(mutationSchema.safeParse({ operation: "book", ...base, sweeper: "yes" }).success).toBe(false);
+  });
+  it("accepts a named trial booking and trims its name", () => {
+    const request = { operation: "addTrialRunner", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1, trialName: "  Trial Runner  " };
+    expect(mutationSchema.parse(request)).toMatchObject({ trialName: "Trial Runner" });
+    expect(mutationSchema.safeParse({ ...request, trialName: "  " }).success).toBe(false);
+    expect(mutationSchema.safeParse({ ...request, trialName: "x".repeat(101) }).success).toBe(false);
   });
   it("accepts a group cancellation with a supported reason", () => {
     const base = { requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };

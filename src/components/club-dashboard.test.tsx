@@ -2,7 +2,7 @@ import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDemoSnapshot } from "../lib/demo-data";
-import { ClubDashboard, runnerStatus } from "./club-dashboard";
+import { bookingName, ClubDashboard, runnerStatus } from "./club-dashboard";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 vi.mock("@/lib/domain", () => import("../lib/domain"));
@@ -34,6 +34,22 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it("offers admins a name-only trial runner booking without member details", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
+    const trialGroup = snapshot.groups.find(group => group.runId === snapshot.weeks[0].id)!;
+    snapshot.bookings.push({ id: "trial-move-option", runId: snapshot.weeks[0].id, groupId: trialGroup.id,
+      memberId: "trial-option", guestName: "Taylor Trial", status: "confirmed", source: "trial", bookedAt: snapshot.weeks[0].bookingOpensAt, version: 1 });
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    expect(html).toContain('<h3 class="subheading">Move a runner</h3>');
+    expect(html).toContain("Add a trial runner");
+    expect(html).toContain('id="trial-runner-name"');
+    expect(html).toContain("Trial runner name");
+    expect(html).toContain("Add trial runner");
+    expect(bookingName(snapshot, snapshot.bookings.at(-1)!)).toBe("Taylor Trial");
+    expect(html).not.toContain("Trial runner email");
+  });
   it("counts confirmed profile runs without attendance and excludes waitlisted or cancelled runs", () => {
     const snapshot = createDemoSnapshot(new Date(startsAt));
     const memberId = snapshot.currentMemberId!;
@@ -58,6 +74,23 @@ describe("leader attendance clock", () => {
     run.status = "cancelled";
     expect(renderProfile()).toContain("Runs attended</span><strong>0</strong>");
     expect(renderProfile()).toContain("Runs led</span><strong>0</strong>");
+  });
+  it("links upcoming groups in My Running but not historical groups", () => {
+    const now = Date.parse("2026-10-06T18:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    const currentRun = snapshot.weeks[0];
+    const pastRun = snapshot.weeks[1];
+    const currentGroup = snapshot.groups.find(group => group.runId === currentRun.id)!;
+    const pastGroup = snapshot.groups.find(group => group.runId === pastRun.id)!;
+    snapshot.currentMemberId = snapshot.members[0].id;
+    snapshot.bookings = [currentRun, pastRun].map((run, index) => {
+      const group = index === 0 ? currentGroup : pastGroup;
+      return { id: `profile-${run.id}`, memberId: snapshot.currentMemberId!, runId: run.id, groupId: group.id,
+        status: "confirmed" as const, source: "member" as const, bookedAt: run.bookingOpensAt, version: 1 };
+    });
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "profile" }));
+    expect(html).toContain(`href="/groups/${currentGroup.id}"`);
+    expect(html).not.toContain(`href="/groups/${pastGroup.id}"`);
   });
   it("prioritises a bookable runner week over earlier future closed and historical weeks", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
@@ -99,6 +132,15 @@ describe("leader attendance clock", () => {
     const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
     const html = renderAdmin();
     expect(html).toContain("Next Tuesday ·");
+    expect(html).toContain('class="panel next-tuesday-panel"');
+    const advancedStart = html.indexOf('<details class="admin-disclosure advanced-controls"');
+    const volunteersStart = html.indexOf('<section class="panel" id="volunteers">');
+    const advancedHtml = html.slice(advancedStart, volunteersStart);
+    expect(advancedHtml).toContain("<summary>Automation and schedule");
+    expect(advancedHtml).toContain("<summary>Create an additional draft manual run</summary>");
+    expect(advancedHtml.match(/<details/g)).toHaveLength(advancedHtml.match(/<\/details>/g)?.length ?? 0);
+    expect(html.indexOf("<summary>Runner moves &amp; trial runners</summary>")).toBeGreaterThan(volunteersStart);
+    expect(html.indexOf("<summary>Group popularity</summary>")).toBeGreaterThan(volunteersStart);
     expect(html).toContain("Leader readiness:");
     expect(html).toContain("<dt>Last successful check</dt>");
     expect(html).toContain("Automation and schedule");

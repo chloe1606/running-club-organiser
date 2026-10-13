@@ -101,6 +101,7 @@ p { margin: .6rem 0; }
 .admin-dashboard .admin-disclosure > .disclosure-content, .admin-dashboard .cancel-disclosure > .disclosure-content { border: 1px solid #b6d5ce; border-radius: 6px; padding: 1rem; margin-top: .75rem; }
 .admin-dashboard .disclosure-content h3, .admin-dashboard .disclosure-content .admin-disclosure > summary { font-size: .9rem; font-weight: 700; }
 .admin-dashboard .disclosure-content > .admin-disclosure:first-child { margin-top: 0; }
+.admin-dashboard .runner-moves-disclosure > .disclosure-content > .subheading:first-child { margin-top: .25rem; }
 .admin-dashboard .disclosure-content .admin-disclosure > .disclosure-content { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: .75rem 0 0; }
 .location-settings { max-width: 100%; padding: 1.15rem; }
 .location-settings h2 { font-size: 1.35rem; }
@@ -244,6 +245,16 @@ h2 { font-size: 1.8rem; }
 .groups .occupancy { height: 6px; margin-top: .75rem; }
 .groups .volunteers { display: grid; gap: .35rem; margin-top: .5rem; padding-top: .8rem; }
 .groups .details-link { padding-top: .65rem; }
+.groups .runner-roster { position: relative; z-index: 1; width: fit-content; max-width: 100%; margin-top: auto; }
+.groups .runner-roster:hover, .groups .runner-roster:focus-within, .groups .runner-roster[open] { z-index: 20; }
+.groups .runner-roster > summary { cursor: pointer; color: var(--club-teal); font-size: .8rem; font-weight: 700; text-underline-offset: .2em; }
+.groups .runner-roster > summary:focus-visible { outline: 3px solid var(--club-teal); outline-offset: 3px; }
+.runner-roster-panel { display: none; position: absolute; z-index: 30; bottom: calc(100% + .5rem); left: 0; width: min(200px, calc(100vw - 2rem)); max-height: min(24rem, 65vh); overflow-y: auto; padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; box-shadow: 0 8px 24px rgb(22 48 42 / 18%); }
+.runner-roster:hover .runner-roster-panel, .runner-roster:focus-within .runner-roster-panel, .runner-roster[open] .runner-roster-panel { display: grid; gap: .85rem; }
+.runner-roster-panel section { min-width: 0; }
+.runner-roster-panel h4 { margin: 0 0 .3rem; color: var(--club-charcoal); font-size: .78rem; }
+.runner-roster-panel ul, .runner-roster-panel ol { display: grid; gap: .2rem; margin: 0; padding-left: 1.25rem; color: var(--muted); font-size: .76rem; }
+.runner-roster-panel p { margin: 0; color: var(--muted); font-size: .76rem; }
 .groups .my-group { border-color: var(--club-teal); border-top-color: var(--club-teal); }
 .groups .my-group .group-number { background: var(--club-teal); color: #fff; }
 .groups .group:not(.group-cancelled) button:not(.secondary):not(.danger), .groups .group:not(.group-cancelled) .button:not(.secondary) { background: var(--club-accent); border-color: var(--club-accent); color: var(--club-charcoal); }
@@ -282,6 +293,7 @@ th { background: #edf5f2; }
 .admin-dashboard .panel { box-shadow: none; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 1.25rem 0; }
 .admin-dashboard .panel:first-child { border-top: 0; padding-top: 0; }
 .admin-dashboard h2 { font-size: 1.35rem; }
+.admin-dashboard .next-tuesday-panel > h2 { font-size: 1.75rem; }
 .selected-run-summary { border-left: 4px solid var(--club-accent); padding-left: .85rem; margin: 1rem 0; }
 .selected-run-summary p, .automation-health p { overflow-wrap: anywhere; }
 .automation-health { border-top: 1px solid var(--line); padding-top: .85rem; margin-top: 1rem; font-size: .88rem; }

@@ -159,6 +159,31 @@ describe("isolated explicit demo", () => {
     expect(booking.status).toBe("waitlisted");
     expect(() => mutateDemo("book", { ...payload() })).toThrow("already");
   });
+  it("lets admins add a named trial runner without a member account", async () => {
+    const { getDemoSnapshot, mutateDemo, payload } = await setup();
+    expect(() => mutateDemo("addTrialRunner", { ...payload(), trialName: "Taylor Trial" }, "runner")).toThrow("Administrator");
+    mutateDemo("addTrialRunner", { ...payload(), trialName: " Taylor Trial " }, "admin");
+    const adminSnapshot = getDemoSnapshot("admin");
+    const trial = adminSnapshot.bookings.find(booking => booking.source === "trial")!;
+    expect(trial).toMatchObject({ guestName: "Taylor Trial", status: "waitlisted", memberId: expect.stringMatching(/^trial-/) });
+    expect(adminSnapshot.members.some(member => member.id === trial.memberId)).toBe(false);
+    expect(getDemoSnapshot("runner").bookings.find(booking => booking.id === trial.id)?.guestName).toBeUndefined();
+  });
+  it("moves a waitlisted trial runner to another group without losing the name", async () => {
+    const { getDemoSnapshot, mutateDemo, payload, group, run } = await setup();
+    mutateDemo("addTrialRunner", { ...payload(), trialName: "Taylor Trial" }, "admin");
+    const trial = getDemoSnapshot("admin").bookings.find(booking => booking.source === "trial")!;
+    const before = getDemoSnapshot("admin");
+    const destination = before.groups.find(candidate => candidate.runId === run.id && candidate.number === 1)!;
+    mutateDemo("moveRunner", { requestId: randomUUID(), runId: run.id, runVersion: run.version,
+      groupId: destination.id, groupVersion: destination.version, memberId: trial.memberId }, "admin");
+    const after = getDemoSnapshot("admin");
+    expect(after.bookings.find(booking => booking.id === trial.id)?.status).toBe("cancelled");
+    expect(after.bookings.find(booking => booking.memberId === trial.memberId && booking.status !== "cancelled"))
+      .toMatchObject({ groupId: destination.id, guestName: "Taylor Trial", source: "trial", status: "confirmed" });
+    expect(after.members.some(member => member.id === trial.memberId)).toBe(false);
+    expect(after.bookings.filter(booking => booking.groupId === group.id && booking.status === "waitlisted")).not.toContainEqual(expect.objectContaining({ memberId: trial.memberId }));
+  });
   it("atomically switches groups, leaves and promotes the first queued runner", async () => {
     const { getDemoSnapshot, mutateDemo, payload, group, run } = await setup();
     mutateDemo("book", payload());
