@@ -22,6 +22,8 @@ select, button, a, input, textarea { touch-action: manipulation; }
 .brand span { font-weight: 400; font-size: .8rem; letter-spacing: .1em; }
 .nav-links { display: flex; align-items: center; flex-wrap: wrap; gap: 1.2rem; font-size: .87rem; font-weight: 700; }
 .nav-links a { text-decoration: none; }
+.nav-links a[aria-current="page"] { background: var(--club-teal); color: #fff; border-radius: 5px; padding: .5rem .75rem; }
+.nav-links a[aria-current="page"]:hover { background: #004e47; color: #fff; text-decoration: none; }
 .demo-banner { background: #e9eddb; border: 1px solid #d5dbc4; border-radius: .6rem; display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; padding: .8rem 1rem; margin-top: 1.5rem; font-size: .8rem; }
 .demo-banner > div { max-width: 850px; }
 .demo-banner label { min-width: 150px; }
@@ -293,6 +295,21 @@ th { background: #edf5f2; }
 
 .workspace-header { padding: 1.5rem 0; margin-bottom: 1.25rem; }
 .workspace-header .eyebrow { margin-bottom: .4rem; }
+.admin-workspace .club-nav { min-height: 68px; padding: .65rem 0; flex-wrap: wrap; }
+.admin-workspace .brand-mark { width: 44px; height: 44px; }
+.admin-workspace .brand-copy strong { font-size: 1rem; }
+.admin-workspace .brand-copy > span { font-size: .72rem; }
+.admin-workspace .nav-links { gap: .6rem; }
+.admin-workspace .workspace-header { padding: 1rem 0; margin-bottom: 1rem; }
+.admin-workspace .workspace-header h1 { font-size: 2rem; }
+.admin-workspace .workspace-header .eyebrow { font-size: .65rem; margin-bottom: .3rem; }
+.admin-workspace .week-bar { margin-bottom: 1.25rem; }
+.readiness-checklist { list-style: none; padding: 0; margin: .75rem 0 0; font-size: .88rem; }
+.readiness-checklist li { padding: .35rem 0; border-top: 1px solid var(--line); }
+.readiness-checklist a { font-weight: 700; }
+.saving-spinner { display: inline-block; width: .9em; height: .9em; margin-right: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -.1em; animation: saving-spin .8s linear infinite; }
+@keyframes saving-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .saving-spinner { animation: none; } }
 .admin-dashboard .panel { box-shadow: none; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 1.25rem 0; }
 .admin-dashboard .panel:first-child { border-top: 0; padding-top: 0; }
 .admin-dashboard h2 { font-size: 1.35rem; }

@@ -38,6 +38,48 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it.each([
+    ["runs", "/"], ["detail", "/"], ["profile", "/profile"], ["leader", "/leader"], ["admin", "/admin"],
+  ] as const)("marks only the current %s navigation tab", (view, href) => {
+    const snapshot = createDemoSnapshot(new Date(startsAt));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view }));
+    expect(html.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(html.match(/<a[^>]*aria-current="page"[^>]*>/)?.[0]).toContain(`href="${href}"`);
+    if (view === "admin") expect(html).toContain('<main class="admin-workspace">');
+    else expect(html).not.toContain('class="admin-workspace"');
+  });
+  it("shows actionable readiness for missing leaders, ready drafts, published and closed runs", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [snapshot.weeks[0]];
+    const run = snapshot.weeks[0];
+    run.status = "draft";
+    snapshot.groups = snapshot.groups.filter(group => group.runId === run.id).slice(0, 1);
+    const group = snapshot.groups[0];
+    group.cancelled = false;
+    group.leaderId = undefined;
+    const readiness = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }))
+      .split('aria-label="Run readiness">')[1].split("</ul>")[0];
+    expect(readiness()).toContain("Draft — needs attention");
+    expect(readiness()).toContain('href="#volunteers"');
+    group.leaderId = snapshot.members.find(member => member.active && member.roles.includes("leader"))!.id;
+    expect(readiness()).toContain("Draft — ready to publish");
+    expect(readiness()).toContain('href="#run-controls"');
+    snapshot.config.weeklyAutomationEnabled = true;
+    expect(readiness()).toContain("Scheduled publication is overdue");
+    expect(readiness()).not.toContain("await scheduled publication");
+    run.status = "published";
+    expect(readiness()).toContain("Ready for runners");
+    run.status = "cancelled";
+    expect(readiness()).toContain("No changes needed");
+    expect(readiness()).not.toContain('href="#run-controls"');
+    run.status = "draft";
+    run.bookingClosesAt = new Date(now - 1000).toISOString();
+    expect(readiness()).toContain("Booking window has closed");
+    expect(readiness()).not.toContain("Draft — ready to publish");
+  });
   it("offers Restore group only for cancelled groups in future draft or published runs", () => {
     const now = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(now));
@@ -190,7 +232,7 @@ describe("leader attendance clock", () => {
     snapshot.weeks[0].status = "draft";
     const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
     const html = renderAdmin();
-    expect(html).toContain("Next Tuesday ·");
+    expect(html).toContain("Today&#x27;s run ·");
     expect(html).toContain('class="panel next-tuesday-panel"');
     const advancedStart = html.indexOf('<details class="admin-disclosure advanced-controls"');
     const volunteersStart = html.indexOf('<section class="panel" id="volunteers">');
@@ -200,7 +242,8 @@ describe("leader attendance clock", () => {
     expect(advancedHtml.match(/<details/g)).toHaveLength(advancedHtml.match(/<\/details>/g)?.length ?? 0);
     expect(html.indexOf("<summary>Runner moves &amp; trial runners</summary>")).toBeGreaterThan(volunteersStart);
     expect(html.indexOf("<summary>Group popularity</summary>")).toBeGreaterThan(volunteersStart);
-    expect(html).toContain("Leader readiness:");
+    expect(html).toContain("Leader coverage:");
+    expect(html).toContain('aria-label="Run readiness"');
     expect(html).toContain("<dt>Last successful check</dt>");
     expect(html).toContain("Automation and schedule");
     expect(html).toContain("Selected run overrides");

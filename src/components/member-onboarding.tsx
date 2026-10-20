@@ -3,6 +3,7 @@
 import { useId, useState } from "react";
 import type { MemberInvitationResult, PlatformSnapshot } from "@/lib/platform-types";
 import type { Mutate } from "./club-dashboard";
+import { SavingButton } from "./saving-button";
 
 const roles = ["runner", "leader", "sweeper", "admin"] as const;
 
@@ -65,9 +66,9 @@ export function MemberOnboarding({ snapshot, mutate, pending }: {
       {duplicate && <p role="alert">A member with this email already exists.</p>}
       {error && <p role="alert">{error}</p>}
       <div className="action-feedback">
-        <button type="submit" disabled={disabled || duplicate || !selectedRoles.length || !name.trim()}>{submitting ? "Adding member..." : "Add member"}</button>
+        <SavingButton type="submit" savingLabel="Adding member..." busy={submitting} disabled={disabled || duplicate || !selectedRoles.length || !name.trim()}>Add member</SavingButton>
         {saved && <p className="notice" role={invitation?.status === "failed" ? "alert" : "status"}>Member added. {invitation?.message ?? "No invitation requested."} {invitation?.status === "failed" && "Membership is saved; retrying will not add another member."}</p>}
-        {invitation?.status === "failed" && <button type="button" disabled={disabled} onClick={() => void retryInvitation()}>{inviting ? "Checking invitation..." : "Retry invitation"}</button>}
+        {invitation?.status === "failed" && <SavingButton type="button" savingLabel="Checking invitation..." busy={inviting} disabled={disabled} onClick={() => void retryInvitation()}>Retry invitation</SavingButton>}
       </div>
     </form>
     </div>

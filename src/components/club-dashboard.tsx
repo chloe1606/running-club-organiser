@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import type { Booking, Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
 import type { ClubMember, MemberInvitationResult, PlatformSnapshot } from "@/lib/platform-types";
@@ -15,6 +15,7 @@ import { DEFAULT_LOCATIONS, DEFAULT_LOCATION_MAPS } from "@/lib/locations";
 import { RouteDescription } from "./route-description";
 import { SearchableSelect } from "./searchable-select";
 import { MemberOnboarding } from "./member-onboarding";
+import { SavingButton, SavingProvider } from "./saving-button";
 import { WeeklyLeaderImport } from "./weekly-leader-import";
 import { canAssignLeaderToGroup } from "@/lib/leader-availability";
 import { clubDate, clubDateTime, nextTuesdayDate, publicationBlockers, sundayPublicationAt, updateRunTime } from "@/lib/schedule";
@@ -65,6 +66,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     (view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : sortedWeeks)[0]?.id ?? "",
   );
   const [pending, setPending] = useState(false);
+  const saving = useRef(false);
   const [message, setMessage] = useState("");
   const [failure, setFailure] = useState(false);
   const uncertainRequests = useRef(new Map<string, { requestId: string; operation: string; payload: Record<string, unknown> }>());
@@ -80,7 +82,8 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   const pickerWeeks = view === "runs" ? [...activeWeeks, ...(run && historicalWeeks.includes(run) ? [run] : [])] : availableWeeks;
   const meetingLocation = run?.location ?? snapshot.config.location;
   const mutate: Mutate = async (operation, payload, onSuccess) => {
-    if (pending) return;
+    if (saving.current) return;
+    saving.current = true;
     const intent = JSON.stringify([operation, Object.keys(payload).filter(key => !key.endsWith("Version")).sort().map(key => [key, payload[key]])]);
     const existing = uncertainRequests.current.get(intent);
     const request = existing ?? { operation, payload, requestId: crypto.randomUUID() };
@@ -112,7 +115,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
           else if (body.weeks) setSnapshot(body);
         }
       } catch { /* Preserve last known data and the visible error. */ }
-    } finally { setPending(false); }
+    } finally { saving.current = false; setPending(false); }
   };
   async function changePersona(persona: string) {
     setPending(true);
@@ -126,14 +129,14 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   }
   const headings = { runs: "Club Runs", leader: "Leaders", admin: "Admin", profile: "My Running", detail: "Group Details" };
   const groups = snapshot.groups.filter(g => g.runId === run?.id).sort((a, b) => a.number - b.number);
-  return <main>
+  return <SavingProvider pending={pending}><main className={view === "admin" ? "admin-workspace" : undefined}>
     <nav className="club-nav" aria-label="Club navigation">
       <ClubBrand />
       <div className="nav-links">
-        <Link href="/">Club Runs</Link>
-        {snapshot.currentMemberId && <Link href="/profile">My Running</Link>}
-        {(leader || admin) && <Link href="/leader">Leaders</Link>}
-        {admin && <Link href="/admin">Admin</Link>}
+        <Link href="/" aria-current={view === "runs" || view === "detail" ? "page" : undefined}>Club Runs</Link>
+        {snapshot.currentMemberId && <Link href="/profile" aria-current={view === "profile" ? "page" : undefined}>My Running</Link>}
+        {(leader || admin) && <Link href="/leader" aria-current={view === "leader" ? "page" : undefined}>Leaders</Link>}
+        {admin && <Link href="/admin" aria-current={view === "admin" ? "page" : undefined}>Admin</Link>}
         {!snapshot.demo && (snapshot.currentMemberId ? <SignOut /> : <SignIn />)}
       </div>
     </nav>
@@ -153,7 +156,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
       </>}
     </header>
     {message && <p className={failure ? "notice error" : "notice"} role={failure ? "alert" : "status"}>{message}</p>}
-    {retry && <p><button disabled={pending} className="secondary" onClick={() => void mutate(retry.operation, retry.payload)}>Retry last save safely</button></p>}
+    {retry && <p><SavingButton savingLabel="Retrying save..." disabled={pending} className="secondary" onClick={() => void mutate(retry.operation, retry.payload)}>Retry last save safely</SavingButton></p>}
     {(view !== "runs" && !snapshot.currentMemberId && !(snapshot.demo && view === "detail")) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/sign-in">Sign in</Link></section> :
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
@@ -184,7 +187,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
         {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} selectWeek={setSelectedId} />}
       </>}
     <footer className="site-footer"><strong>Better together.</strong><span>PETTS WOOD RUNNERS Tuesday Club Runs</span></footer>
-  </main>;
+  </main></SavingProvider>;
 }
 
 function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run: Run; group: Group }) {
@@ -282,7 +285,7 @@ function AutomationSettings({ snapshot, mutate, pending }: { snapshot: PlatformS
   }}>
     <label className="check automation-toggle"><input type="checkbox" checked={enabled} disabled={pending} onChange={event => setEnabled(event.target.checked)} /><span>Weekly automation</span></label>
     <label>Sunday publication time<input type="time" required value={publishTime} disabled={pending} onChange={event => setPublishTime(event.target.value)} /></label>
-    <button disabled={pending}>Save weekly settings</button>
+    <SavingButton savingLabel="Saving settings..." disabled={pending}>Save weekly settings</SavingButton>
   </form>;
 }
 
@@ -298,7 +301,7 @@ function WeekTimeEditor({ snapshot, run, mutate, pending, now }: { snapshot: Pla
     if (preview) void mutate("updateWeekTime", { runId: run.id, runVersion: run.version, startTime });
   }}>
     <label>Start time for this week<input type="time" required value={startTime} disabled={pending} onChange={event => setStartTime(event.target.value)} /></label>
-    <button disabled={pending || !preview}>Save start time</button>
+    <SavingButton savingLabel="Saving start time..." disabled={pending || !preview}>Save start time</SavingButton>
     <p className="hint">{preview ? `Booking cutoff: ${timeFormat.format(new Date(preview.bookingClosesAt))} (${snapshot.config.timeZone}). Published cutoffs never move later.` : error}</p>
   </form>;
 }
@@ -354,6 +357,12 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const localTimestamp = (value: string) => new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
   const lastCheck = snapshot.schedulerHealth?.lastSuccessfulCheckAt;
   const nextRun = [...snapshot.weeks].filter(week => Date.parse(week.startsAt) > now && ["draft", "published"].includes(week.status)).sort((left, right) => left.startsAt.localeCompare(right.startsAt))[0];
+  const blockers = run ? publicationBlockers(snapshot, run, new Date(now)) : [];
+  const futureRun = run && Date.parse(run.startsAt) > now && ["draft", "published"].includes(run.status);
+  function openRunControls(event: MouseEvent<HTMLAnchorElement>) {
+    const details = event.currentTarget.closest(".next-tuesday-panel")?.querySelector<HTMLDetailsElement>("#run-controls");
+    if (details) details.open = true;
+  }
   function create(e: FormEvent) {
     e.preventDefault();
     setDraftMessage("");
@@ -406,11 +415,23 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     });
   }
   return <div className="stack admin-dashboard">
-    <section className="panel next-tuesday-panel"><h2>{run ? `${run.id === nextRun?.id ? "Next Tuesday" : "Selected Tuesday"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Next Tuesday"}</h2>
+    <section className="panel next-tuesday-panel"><h2>{run ? `${clubDate(new Date(run.startsAt), snapshot.config.timeZone) === clubDate(new Date(now), snapshot.config.timeZone) ? "Today's run" : run.id === nextRun?.id ? "Upcoming run" : "Selected run"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Upcoming run"}</h2>
       {run && <div className="selected-run-summary">
         <p><strong>{run.location ?? snapshot.config.location}</strong> · {new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.startsAt))} · <span className={`badge ${run.status}`}>{run.status}</span></p>
-        <p><strong>Leader readiness: {runningGroups.length - missingLeaders.length}/{runningGroups.length}</strong> running groups</p>
-        {missingLeaders.length > 0 ? <p className="hint">Missing leaders: {missingLeaders.map(group => `Group ${group.number}`).join(", ")}. <a href="#volunteers">Assign leaders</a></p> : <p className="hint">{runningGroups.length ? "All running groups have an eligible leader." : "No groups are running."}</p>}
+        <ul className="readiness-checklist" aria-label="Run readiness">
+          <li><strong>Publication:</strong> {run.status === "draft" ? blockers.length ? "Draft — needs attention before publication." : "Draft — ready to publish." :
+            run.status === "published" ? "Published — visible to members." : run.status === "cancelled" ? "Cancelled — this run will not take place." : "Archived — read-only history."}</li>
+          <li><strong>Leader coverage:</strong> {runningGroups.length - missingLeaders.length}/{runningGroups.length} running groups.
+            {missingLeaders.length > 0 ? <> Missing leaders: {missingLeaders.map(group => `Group ${group.number}`).join(", ")}. {futureRun && <a href="#volunteers">Assign leaders</a>}</> :
+              runningGroups.length ? " All running groups have an eligible leader." : " No groups are running."}</li>
+          <li><strong>Next action:</strong> {!futureRun ? "No changes needed for this closed or past run." :
+            missingLeaders.length ? <a href="#volunteers">Assign missing leaders or cancel groups that will not run.</a> :
+            run.status === "draft" && blockers.length ? <>{blockers.join(". ")}. <a href="#run-controls" onClick={openRunControls}>Review run controls</a></> :
+            run.status === "draft" ? <><a href="#run-controls" onClick={openRunControls}>Publish this run</a>{snapshot.config.weeklyAutomationEnabled &&
+              (Date.parse(sundayPublicationAt(run, snapshot.config)) <= now ? ". Scheduled publication is overdue; review automation." :
+                ` or await scheduled publication on ${localTimestamp(sundayPublicationAt(run, snapshot.config))}.`)}</> :
+            bookingIsOpen(run, new Date(now)) ? "Ready for runners — bookings are open." : Date.parse(run.bookingOpensAt) > now ? "Wait for bookings to open." : "Bookings are closed; prepare for the run."}</li>
+        </ul>
       </div>}
       {snapshot.weeks.some(week => week.status === "draft" && Date.parse(week.startsAt) > now) && <><h3>Upcoming drafts</h3>
       <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
@@ -418,7 +439,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         const due = Date.parse(sundayPublicationAt(week, snapshot.config)) <= now;
         return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}</span></li>;
       })}</ul></>}
-      <details className="admin-disclosure advanced-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
+      <details className="admin-disclosure advanced-controls" id="run-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
       <WeeklyLeaderImport snapshot={snapshot} mutate={mutate} pending={pending} />
       <details className="admin-disclosure" suppressHydrationWarning><summary>Automation and schedule · {snapshot.config.weeklyAutomationEnabled ? "On" : "Off"}</summary><div className="disclosure-content">
       <div className="automation-health" aria-label="Automation health">
@@ -443,13 +464,13 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
       <label>Location for new week<select required value={newWeekLocation} disabled={!locationOptions.length} onChange={e => setNewWeekLocation(e.target.value)}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
       <label>Copy scaffold<select value={copy} onChange={e => setCopy(e.target.value)}><option value="">Configured group defaults</option>{snapshot.weeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt)}</option>)}</select></label>
-      <div className="action-feedback"><button disabled={pending || !locationOptions.length}>Create draft week</button>
+      <div className="action-feedback"><SavingButton savingLabel="Creating draft..." disabled={pending || !locationOptions.length}>Create draft week</SavingButton>
         {draftMessage && <p className="notice" role="status">{draftMessage}</p>}
       </div>
     </form>{!locationOptions.length ? <p className="notice">No venues are available. Add a location in the Venue list below before creating a week.</p> : <p className="hint">No runners or volunteer assignments are copied.</p>}</div></details>
       {run && <><h3 className="subheading">Selected run overrides</h3><div className="actions">
-        <button disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
-        <button className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</button>
+        <SavingButton savingLabel="Publishing..." disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</SavingButton>
+        <SavingButton savingLabel="Archiving..." className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</SavingButton>
       </div></>}
     {run && ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="week-location-panel">
       <details className="admin-disclosure" suppressHydrationWarning>
@@ -480,23 +501,23 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         />
         {g.cancelled ? <div className="admin-group-actions">
           <span className="hint">Not running · {g.cancellationReason === "no-leader" ? "no leader available" : "insufficient interest"}</span>
-          {["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <button type="button" className="secondary" disabled={pending} onClick={() => {
+          {["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <SavingButton savingLabel="Restoring group..." type="button" className="secondary" disabled={pending} onClick={() => {
             if (window.confirm(`Restore Group ${g.number}? Cancelled bookings will not be reinstated. Assign a leader again after restoring.`)) {
               setRestoredGroup(undefined);
               void mutate("restoreGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version }, () => setRestoredGroup(g.id));
             }
-          }}>Restore group</button>}
+          }}>Restore group</SavingButton>}
         </div> : ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="admin-group-actions">
-          {!g.leaderId && <button type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
+          {!g.leaderId && <SavingButton savingLabel="Cancelling group..." type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
             if (window.confirm(`Mark Group ${g.number} as not held because no leader is available? Existing bookings will be cancelled.`)) {
               void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "no-leader" });
             }
-          }}>Cancel · no leader</button>}
-          <button type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
+          }}>Cancel · no leader</SavingButton>}
+          <SavingButton savingLabel="Cancelling group..." type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
             if (window.confirm(`Cancel Group ${g.number} for insufficient interest? Existing bookings will be cancelled.`)) {
               void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "low-interest" });
             }
-          }}>Cancel · low interest</button>
+          }}>Cancel · low interest</SavingButton>
         </div>}
         {restoredGroup === g.id && !g.cancelled && <p className="notice" role="status">Group {g.number} restored. Assign a leader; cancelled bookings have not been reinstated.</p>}
       </div>)}</div>
@@ -520,7 +541,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         <SearchableSelect label="Destination" value={moveGroup} placeholder="Select group"
           options={groups.map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setMoveGroup} />
-        <div className="action-feedback"><button disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</button>
+        <div className="action-feedback"><SavingButton savingLabel="Moving runner..." disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</SavingButton>
           {moveMessage && <p className="notice" role="status">{moveMessage}</p>}
         </div>
       </form><hr className="admin-section-divider" /><h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
@@ -537,7 +558,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         <SearchableSelect label="Group" value={trialGroup} placeholder="Select group"
           options={groups.filter(g => !g.cancelled).map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setTrialGroup} />
-        <div className="action-feedback"><button disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</button>
+        <div className="action-feedback"><SavingButton savingLabel="Adding trial runner..." disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</SavingButton>
           {trialMessage && <p className="notice" role="status">{trialMessage}</p>}
         </div>
       </form></div>
@@ -600,19 +621,19 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <form className="venue-editor" onSubmit={saveVenueMap}>
         <label htmlFor="venue-map-select">Edit Maps link for<select id="venue-map-select" value={venueSelection} disabled={pending || !locationOptions.length} onChange={event => { setVenueSelection(event.target.value); setVenueMapsUrl(snapshot.config.locationMaps?.[event.target.value] ?? ""); }}>{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
         <label htmlFor="venue-map-url">Google Maps link<input id="venue-map-url" type="url" value={venueMapsUrl} onChange={event => setVenueMapsUrl(event.target.value)} placeholder="https://www.google.com/maps/..." /></label>
-        <div className="action-feedback"><button className="secondary" disabled={pending || !locationOptions.length}>Save Maps link</button>
+        <div className="action-feedback"><SavingButton savingLabel="Saving Maps link..." className="secondary" disabled={pending || !locationOptions.length}>Save Maps link</SavingButton>
           {mapsMessage && <p className="notice" role="status">{mapsMessage}</p>}
         </div>
       </form>
       <form className="venue-add-form" onSubmit={addLocation}>
         <label htmlFor="new-location">Add location<input id="new-location" value={newLocation} maxLength={120} onChange={event => setNewLocation(event.target.value)} placeholder="Venue name or address" /></label>
         <label htmlFor="new-location-map">Google Maps link<input id="new-location-map" type="url" value={newLocationMapsUrl} onChange={event => setNewLocationMapsUrl(event.target.value)} placeholder="https://www.google.com/maps/..." /></label>
-        <div className="action-feedback"><button disabled={pending || !newLocation.trim()}>Add location</button>
+        <div className="action-feedback"><SavingButton savingLabel="Adding location..." disabled={pending || !newLocation.trim()}>Add location</SavingButton>
           {locationMessage && <p className="notice" role="status">{locationMessage}</p>}
         </div>
       </form>
       <ul className="venue-list" aria-label="Saved venues">{locationOptions.map(location => <li key={location}>
-        <span>{location}</span><button type="button" className="secondary" disabled={pending || locationOptions.length < 2} onClick={() => removeLocation(location)}>Remove</button>
+        <span>{location}</span><SavingButton savingLabel="Removing..." type="button" className="secondary" disabled={pending || locationOptions.length < 2} onClick={() => removeLocation(location)}>Remove</SavingButton>
       </li>)}</ul>
       {removedLocation && <p className="notice" role="status">Location &quot;{removedLocation}&quot; removed.</p>}
       </div>
@@ -628,6 +649,6 @@ function MemberEditor({ member, mutate, pending }: { member: ClubMember; mutate:
   return <form className="member-editor" onSubmit={e => { e.preventDefault(); void mutate("updateMember", { memberId: member.id, memberVersion: member.version, name, roles, active }); }}>
     <label><span className="sr-only">Name for {member.name}</span><input required value={name} onChange={e => setName(e.target.value)} /><small>{member.email || "Email restricted"}</small></label>
     <fieldset><legend className="sr-only">Roles for {member.name}</legend>{["runner", "leader", "sweeper", "admin"].map(role => <label className="check" key={role}><input type="checkbox" checked={roles.includes(role)} onChange={e => setRoles(e.target.checked ? [...roles, role] : roles.filter(r => r !== role))} />{role}</label>)}<label className="check"><input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} />Active</label></fieldset>
-    <button disabled={pending} className="secondary">Save member</button>
+    <SavingButton savingLabel="Saving member..." disabled={pending} className="secondary">Save member</SavingButton>
   </form>;
 }

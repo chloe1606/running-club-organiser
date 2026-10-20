@@ -18,6 +18,8 @@ Available checks: `npm test`, `npm run lint`, `npm run build`. External services
 
 Admin add-member, add-location, draft-week, runner-move, trial-runner and Maps-link actions show confirmation directly below their buttons after a successful save. Failed venue saves retain the entered details for correction or retry.
 
+The admin workspace uses compact branding and headings, with a solid teal active navigation tab on each club page. Admin action buttons display action-specific saving text and a spinner while their request runs, preventing repeat submissions; reduced-motion preferences disable spinner animation. The selected run's readiness checklist shows publication status, eligible leader coverage and a next action, linking to volunteers or opening run controls without publishing automatically.
+
 In Admin > Volunteers, cancelled groups within future draft or published runs have a **Restore group** button. Restoration is administrator-only, clears volunteer assignments and leaves cancelled bookings cancelled. Assign a leader again afterwards. Entire cancelled or archived runs and past groups cannot be restored. Deploy the updated `apps-script/Code.gs` as a new Apps Script deployment version before using this action on the live workbook.
 
 ## Owner confirmation required before publication
