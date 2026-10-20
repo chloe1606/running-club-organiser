@@ -22,6 +22,12 @@ export interface ClubMember {
   version: number;
 }
 
+export interface MemberInvitationResult {
+  memberId: string;
+  status: "sent" | "registered" | "pending" | "demo" | "failed";
+  message: string;
+}
+
 export interface Attendance {
   id: string;
   runId: string;

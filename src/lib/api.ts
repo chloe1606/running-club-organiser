@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { GatewayError } from "./gateway";
 import { mutationSchema } from "./platform-schema";
 import { executeMutation, getPlatformSnapshot } from "./platform";
+import { inviteClubMember } from "./member-invitations";
+import type { MemberInvitationResult } from "./platform-types";
 
 export function errorResponse(error: unknown) {
   if (error instanceof GatewayError) {
@@ -29,7 +31,19 @@ export async function handleMutation(request: Request, operation?: string) {
     const parsed = mutationSchema.safeParse(operation && body && typeof body === "object" ? { ...body, operation } : body);
     if (!parsed.success) return NextResponse.json({ message: "Invalid club request." }, { status: 400 });
     const data = await executeMutation(parsed.data);
-    return NextResponse.json({ data });
+    let invitation: MemberInvitationResult | undefined;
+    if (parsed.data.operation === "addMember" && parsed.data.active && parsed.data.sendInvitation) {
+      const email = parsed.data.memberEmail;
+      const memberId = data.members.find(member => member.email.trim().toLowerCase() === email)?.id;
+      if (!memberId) throw new GatewayError("Membership save could not be confirmed. Retry the same request before inviting.", 502, "INVALID_SCHEMA");
+      try {
+        invitation = await inviteClubMember(memberId);
+      } catch (error) {
+        invitation = { memberId, status: "failed", message: error instanceof GatewayError ? error.message :
+          "The invitation could not be confirmed. Retry to check Clerk before sending again." };
+      }
+    }
+    return NextResponse.json({ data, invitation });
   } catch (error) {
     if (error instanceof GatewayError && error.status === 409) {
       try {

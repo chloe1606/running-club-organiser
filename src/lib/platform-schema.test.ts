@@ -20,7 +20,8 @@ describe("snapshot integrity", () => {
   it("normalizes new member email and strips actor identity and client-generated IDs", () => {
     const request = { operation: "addMember", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", memberEmail: " NEW@example.org ", name: " New Runner ", roles: ["runner"], active: true, email: "admin@example.org", memberId: "forged", version: 99 };
     expect(mutationSchema.parse(request)).toEqual({ operation: request.operation, requestId: request.requestId, memberEmail: "new@example.org", name: "New Runner", roles: ["runner"], active: true });
-    for (const invalid of [{ memberEmail: "bad" }, { name: " " }, { roles: [] }, { roles: ["owner"] }, { active: "true" }]) {
+    expect(mutationSchema.parse({ ...request, sendInvitation: true })).toMatchObject({ sendInvitation: true });
+    for (const invalid of [{ memberEmail: "bad" }, { name: " " }, { roles: [] }, { roles: ["owner"] }, { active: "true" }, { sendInvitation: "true" }]) {
       expect(mutationSchema.safeParse({ ...request, ...invalid }).success).toBe(false);
     }
   });
@@ -93,6 +94,12 @@ describe("snapshot integrity", () => {
     expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "low-interest" }).success).toBe(true);
     expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "no-leader" }).success).toBe(true);
     expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "weather" }).success).toBe(false);
+  });
+  it("requires run and group versions for group restoration and strips browser actors", () => {
+    const request = { operation: "restoreGroup", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };
+    expect(mutationSchema.parse({ ...request, email: "forged@example.org", roles: ["admin"] })).toEqual(request);
+    expect(mutationSchema.safeParse({ ...request, runVersion: undefined }).success).toBe(false);
+    expect(mutationSchema.safeParse({ ...request, groupVersion: undefined }).success).toBe(false);
   });
   it("accepts None when clearing a leader assignment", () => {
     expect(mutationSchema.safeParse({

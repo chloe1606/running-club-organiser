@@ -22,6 +22,58 @@ beforeEach(() => { vi.stubEnv("CLUB_DEMO_MODE", "false"); });
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
 describe("server identity and role boundary", () => {
+  it("denies group restoration to non-admins before reaching the workbook", async () => {
+    vi.mocked(getClubMember).mockResolvedValue({ ...member, roles: "runner,leader" });
+    await expect(executeMutation({ operation: "restoreGroup", requestId: mutation.requestId,
+      runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 })).rejects.toMatchObject({ status: 403 });
+    expect(mutateSheet).not.toHaveBeenCalled();
+  });
+  it("verifies an admin once per location save, but checks access again on the next request", async () => {
+    vi.mocked(getClubMember).mockResolvedValue({ ...member, roles: "admin" });
+    const snapshot = {
+      weeks: [], groups: [], bookings: [],
+      members: [{ id: member.memberId, email: member.email, name: member.displayName, roles: ["admin"], active: true, version: 1 }],
+      attendance: [], audit: [], demo: false,
+      config: { location: "New venue", locations: ["New venue"], timeZone: "Europe/London", startTime: "18:30", demoConfiguration: false },
+    };
+    vi.mocked(mutateSheet).mockResolvedValueOnce({}).mockResolvedValueOnce(snapshot);
+    const intent = { operation: "updateLocations" as const, requestId: mutation.requestId, location: "New venue", locations: ["New venue"] };
+    expect(await executeMutation(intent)).toMatchObject({ currentMemberId: member.memberId, config: { location: "New venue" } });
+    expect(getClubMember).toHaveBeenCalledTimes(1);
+    expect(mutateSheet).toHaveBeenCalledTimes(2);
+    expect(mutateSheet).toHaveBeenNthCalledWith(1, "updateLocations", { ...intent, email: member.email });
+    expect(mutateSheet).toHaveBeenNthCalledWith(2, "snapshot", { email: member.email });
+    vi.mocked(getClubMember).mockResolvedValue({ ...member, roles: "runner" });
+    await expect(executeMutation({ ...intent, requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988e" })).rejects.toMatchObject({ status: 403 });
+    expect(getClubMember).toHaveBeenCalledTimes(2);
+    expect(mutateSheet).toHaveBeenCalledTimes(2);
+  });
+  it.each(["inactive", "different-id", "different-email", "removed-admin"])(
+    "applies refreshed workbook membership after saving: %s", async change => {
+      vi.mocked(getClubMember).mockResolvedValue({ ...member, roles: "admin" });
+      vi.mocked(mutateSheet).mockResolvedValueOnce({}).mockResolvedValueOnce({
+        weeks: [], groups: [], bookings: [],
+        members: [{ id: change === "different-id" ? "other" : member.memberId,
+          email: change === "different-email" ? "other@example.org" : member.email,
+          name: member.displayName, roles: [change === "removed-admin" ? "runner" : "admin"],
+          active: change !== "inactive", version: 2 }],
+        attendance: [], audit: [{ id: "audit", runId: "", actorId: member.memberId, action: "updateLocations",
+          at: "2026-10-20T12:00:00Z", requestId: mutation.requestId }],
+        demo: false,
+        config: { location: "Venue", timeZone: "Europe/London", startTime: "18:30", demoConfiguration: false },
+      });
+      const result = await executeMutation({ operation: "updateLocations", requestId: mutation.requestId, location: "Venue", locations: ["Venue"] });
+      expect(getClubMember).toHaveBeenCalledOnce();
+      expect(result.audit).toEqual([]);
+      if (change === "removed-admin") {
+        expect(result.currentMemberId).toBe(member.memberId);
+        expect(result.members[0].roles).toEqual(["runner"]);
+      } else {
+        expect(result.currentMemberId).toBeUndefined();
+        expect(result.members).toEqual([]);
+      }
+    },
+  );
   it("denies member creation for runners before reaching the gateway", async () => {
     vi.mocked(getClubMember).mockResolvedValue(member);
     await expect(executeMutation({ operation: "addMember", requestId: mutation.requestId, memberEmail: "new@example.com", name: "New Runner", roles: ["runner"], active: true })).rejects.toMatchObject({ status: 403 });

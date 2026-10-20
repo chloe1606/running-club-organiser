@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { PlatformSnapshot, WeeklyLeaderImportPreview } from "@/lib/platform-types";
 import { weeklyLeaderImportPreviewSchema } from "../lib/platform-schema";
 import type { Mutate } from "./club-dashboard";
+import { SavingButton } from "./saving-button";
 
 export function WeeklyLeaderPreview({ preview }: { preview: WeeklyLeaderImportPreview }) {
   return <>
@@ -48,16 +49,14 @@ export function WeeklyLeaderImport({ snapshot, mutate, pending }: {
     catch (failure) { setError(failure instanceof Error ? failure.message : "The import could not be applied."); }
     finally { setApplying(false); }
   }
-  return <details className="admin-disclosure">
-    <summary>Import weekly leaders</summary>
-    <div className="disclosure-content">
-    <button type="button" disabled={disabled} onClick={() => void loadPreview()}>{loading ? "Checking worksheet..." : "Preview import"}</button>
+  return <section className="weekly-leader-import" aria-label="Import weekly leaders">
+    <h2>Import weekly leaders</h2>
+    <SavingButton savingLabel="Checking worksheet..." busy={loading} type="button" disabled={disabled} onClick={() => void loadPreview()}>Preview import</SavingButton>
     {error && <p role="alert">{error}</p>}
     {result && <>
       <WeeklyLeaderPreview preview={result.preview} />
       {stale && <p role="alert">Club data changed. Preview the import again.</p>}
-      <button type="button" disabled={disabled || !!stale || result.preview.errors.length > 0 || result.preview.changes.length === 0} onClick={() => void apply()}>{applying ? "Applying import..." : "Apply leader changes"}</button>
+      <SavingButton savingLabel="Applying import..." busy={applying} type="button" disabled={disabled || !!stale || result.preview.errors.length > 0 || result.preview.changes.length === 0} onClick={() => void apply()}>Apply leader changes</SavingButton>
     </>}
-    </div>
-  </details>;
+  </section>;
 }

@@ -26,6 +26,67 @@ async function setup() {
 }
 
 describe("isolated explicit demo", () => {
+  it("publishes drafts with unled groups automatically cancelled and leaves their bookings cancelled on replay", async () => {
+    const { mutateDemo, getDemoSnapshot, run } = await setup();
+    const created = mutateDemo("createWeek", { requestId: randomUUID(), date: "2026-10-13" }, "admin");
+    const draft = created.weeks.find(week => week.id === "demo-run-2026-10-13")!;
+    const groups = created.groups.filter(group => group.runId === draft.id);
+    const leader = created.members.find(member => member.id === "demo-leader")!;
+    const assigned = mutateDemo("assignLeader", { requestId: randomUUID(), runId: draft.id, runVersion: draft.version,
+      groupId: groups[0].id, groupVersion: groups[0].version, memberId: leader.id }, "admin");
+    const request = { requestId: randomUUID(), runId: draft.id, runVersion: assigned.weeks.find(week => week.id === draft.id)!.version };
+    const before = getDemoSnapshot("admin");
+    expect(() => mutateDemo("publishRun", request, "admin")).toThrow("already published");
+    expect(getDemoSnapshot("admin")).toEqual(before);
+    mutateDemo("cancelRun", { requestId: randomUUID(), runId: run.id, runVersion: run.version, cancellationReason: "Test replacement" }, "admin");
+    const published = mutateDemo("publishRun", request, "admin");
+    const activeGroups = published.groups.filter(group => group.runId === draft.id);
+    expect(published.weeks.find(week => week.id === draft.id)?.status).toBe("published");
+    expect(activeGroups[0].cancelled).not.toBe(true);
+    expect(activeGroups[0].leaderId).toBe(leader.id);
+    for (const group of activeGroups.slice(1)) {
+      const previous = groups.find(candidate => candidate.id === group.id)!;
+      if (previous.cancelled) expect(group).toEqual(previous);
+      else expect(group).toMatchObject({ cancelled: true, cancellationReason: "no-leader" });
+    }
+    expect(published.audit.some(event => event.action === "cancelGroup" && event.runId === draft.id)).toBe(true);
+    expect(mutateDemo("publishRun", request, "admin")).toEqual(published);
+  });
+  it("automatically publishes an all-unled draft as not running on the scheduled tick", async () => {
+    const { runDemoWeeklyAutomation, mutateDemo, getDemoSnapshot } = await import("./demo-store");
+    mutateDemo("createWeek", { requestId: randomUUID(), date: "2026-10-13" }, "admin");
+    const initial = getDemoSnapshot("admin");
+    mutateDemo("updateWeeklyAutomation", { requestId: randomUUID(), configVersion: initial.config.version ?? 1, enabled: true, publishTime: "18:00" }, "admin");
+    vi.setSystemTime(new Date("2026-10-11T17:00:00Z"));
+    runDemoWeeklyAutomation();
+    const published = getDemoSnapshot("admin");
+    const run = published.weeks.find(week => week.id === "demo-run-2026-10-13")!;
+    expect(run.status).toBe("published");
+    expect(published.groups.filter(group => group.runId === run.id).every(group => group.cancelled)).toBe(true);
+    expect(snapshotSchema.safeParse({ ...published, demo: false }).success).toBe(true);
+    runDemoWeeklyAutomation();
+    expect(getDemoSnapshot("admin")).toEqual(published);
+  });
+  it("restores cancelled groups only as admin without restoring bookings and supports safe replay", async () => {
+    const { mutateDemo, getDemoSnapshot, payload, group } = await setup();
+    const cancelled = mutateDemo("cancelGroup", { ...payload(), reason: "low-interest" }, "admin");
+    const request = payload();
+    expect(() => mutateDemo("restoreGroup", request, "runner")).toThrow("Administrator");
+    expect(() => mutateDemo("restoreGroup", request, "leader")).toThrow("Administrator");
+    expect(() => mutateDemo("restoreGroup", { ...request, groupVersion: 0 }, "admin")).toThrow("changed");
+    const restored = mutateDemo("restoreGroup", request, "admin");
+    const result = restored.groups.find(candidate => candidate.id === group.id)!;
+    expect(result.cancelled).toBeUndefined();
+    expect(result.cancellationReason).toBeUndefined();
+    expect(result.leaderId).toBeUndefined();
+    expect(result.sweeperId).toBeUndefined();
+    expect(restored.bookings).toEqual(cancelled.bookings);
+    expect(result.version).toBe(request.groupVersion + 1);
+    expect(restored.audit[0].action).toBe("restoreGroup");
+    expect(mutateDemo("restoreGroup", request, "admin")).toEqual(restored);
+    expect(() => mutateDemo("restoreGroup", payload(), "admin")).toThrow("not cancelled");
+    expect(getDemoSnapshot("admin")).toEqual(restored);
+  });
   it("records only explicit synthetic scheduler checks, including disabled no-ops", async () => {
     const { getDemoSnapshot, runDemoWeeklyAutomation } = await import("./demo-store");
     const before = getDemoSnapshot("admin");
@@ -79,6 +140,11 @@ describe("isolated explicit demo", () => {
     expect(snapshot.bookings.filter(booking => booking.runId === draft.id)).toEqual([]);
     expect(mutateDemo("updateWeeklyAutomation", intent, "admin")).toEqual(snapshot);
     expect(() => mutateDemo("updateWeeklyAutomation", { ...intent, requestId: randomUUID() }, "admin")).toThrow("changed");
+    const leader = snapshot.members.find(member => member.active && member.roles.includes("leader"))!;
+    const firstGroup = groups[0];
+    const draftBefore = getDemoSnapshot("admin").weeks.find(week => week.id === draft.id)!;
+    mutateDemo("assignLeader", { requestId: randomUUID(), runId: draft.id, runVersion: draftBefore.version,
+      groupId: firstGroup.id, groupVersion: firstGroup.version, memberId: leader.id }, "admin");
     const before = getDemoSnapshot("admin");
     vi.setSystemTime(new Date("2026-10-11T17:00:00Z"));
     expect(getDemoSnapshot("admin")).toEqual(before);
@@ -86,15 +152,9 @@ describe("isolated explicit demo", () => {
     snapshot = getDemoSnapshot("admin");
     expect(snapshot.weeks.find(week => week.id === initial.weeks[0].id)?.status).toBe("archived");
     expect(snapshot.attendance).toEqual(initial.attendance);
-    expect(snapshot.bookings).toEqual(initial.bookings);
-    expect(snapshot.weeks.find(week => week.id === draft.id)?.status).toBe("draft");
-    const leader = snapshot.members.find(member => member.active && member.roles.includes("leader"))!;
-    for (const group of groups) {
-      snapshot = getDemoSnapshot("admin");
-      const week = snapshot.weeks.find(week => week.id === draft.id)!;
-      const payload = { requestId: randomUUID(), runId: week.id, runVersion: week.version, groupId: group.id, groupVersion: group.version };
-      mutateDemo(group.number === 1 ? "assignLeader" : "cancelGroup", { ...payload, ...(group.number === 1 ? { memberId: leader.id } : { reason: "no-leader" }) }, "admin");
-    }
+    expect(snapshot.bookings.filter(booking => booking.runId !== draft.id)).toEqual(initial.bookings);
+    expect(snapshot.groups.filter(group => group.runId === draft.id && group.id !== firstGroup.id)
+      .every(group => group.cancelled && group.cancellationReason === "no-leader")).toBe(true);
     runDemoWeeklyAutomation();
     snapshot = getDemoSnapshot("admin");
     expect(snapshot.weeks.find(week => week.id === draft.id)?.status).toBe("published");

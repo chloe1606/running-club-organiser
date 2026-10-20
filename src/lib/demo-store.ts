@@ -46,6 +46,25 @@ export function mutateDemo(operation: string, payload: Record<string, unknown>, 
   }
 }
 
+function cancelUnledGroups(next: PlatformSnapshot, run: Run, now: Date, actorId: string, requestId: string) {
+  for (const group of next.groups.filter(group => group.runId === run.id && !group.cancelled &&
+      !next.members.some(member => member.id === group.leaderId && member.active && member.roles.includes("leader")))) {
+    group.cancelled = true;
+    group.cancellationReason = "no-leader";
+    delete group.leaderId;
+    delete group.sweeperId;
+    group.version++;
+    for (const booking of next.bookings.filter(booking => booking.runId === run.id && booking.groupId === group.id && booking.status !== "cancelled")) {
+      const waiting = booking.status === "waitlisted";
+      booking.status = "cancelled"; booking.version++;
+      if (waiting) next.audit.unshift({ id: crypto.randomUUID(), actorId, runId: run.id, groupId: group.id,
+        memberId: booking.memberId, action: "withdrawn", at: now.toISOString(), requestId,
+        queueSize: next.bookings.filter(entry => entry.groupId === group.id && entry.status === "waitlisted").length });
+    }
+    next.audit.unshift({ id: crypto.randomUUID(), actorId, runId: run.id, groupId: group.id, action: "cancelGroup", at: now.toISOString(), requestId });
+  }
+}
+
 function weeklyAutomation(next: PlatformSnapshot, now: Date, actorId: string) {
   if (!next.config.weeklyAutomationEnabled) return;
   const audit = (action: string, run: Run) => {
@@ -79,6 +98,7 @@ function weeklyAutomation(next: PlatformSnapshot, now: Date, actorId: string) {
   if (now < new Date(publication)) return;
   if (run.status === "draft" && !publicationBlockers(next, run, now).length && Date.parse(run.bookingClosesAt) > now.getTime()) {
     assertCanPublish(run, next.weeks, now);
+    cancelUnledGroups(next, run, now, actorId, crypto.randomUUID());
     run.status = "published"; run.version++; audit("publishRun", run);
   }
 }
@@ -137,7 +157,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     requireRun();
     if (!group || group.runId !== run!.id) throw new Error("Group not found in this run.");
     if (payload.groupVersion !== group.version) throw new GatewayError("This group changed. Refresh and try again.", 409, "STALE_VERSION");
-    if (group.cancelled && operation !== "cancelGroup") throw new Error("This group is not running.");
+    if (group.cancelled && !["cancelGroup", "restoreGroup"].includes(operation)) throw new Error("This group is not running.");
     return group;
   };
   const requireLeader = () => {
@@ -192,6 +212,18 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     case "updateWeekTime": {
       requireAdmin(); requireRun();
       Object.assign(run!, updateRunTime(run!, String(payload.startTime ?? ""), next.config, now));
+      run!.version++;
+      break;
+    }
+    case "restoreGroup": {
+      requireAdmin(); requireGroup();
+      if (!["draft", "published"].includes(run!.status) || new Date(run!.startsAt) <= now) throw new Error("Only a future draft or published group can be restored.");
+      if (!group!.cancelled) throw new Error("This group is not cancelled.");
+      delete group!.cancelled;
+      delete group!.cancellationReason;
+      delete group!.leaderId;
+      delete group!.sweeperId;
+      group!.version++;
       run!.version++;
       break;
     }
@@ -317,7 +349,13 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
       }
       break;
     }
-    case "publishRun": requireAdmin(); requireRun(); if (run!.status !== "draft") throw new Error("Only draft weeks can be published."); assertCanPublish(run!, next.weeks, now); run!.status = "published"; run!.version++; break;
+    case "publishRun":
+      requireAdmin(); requireRun();
+      if (run!.status !== "draft") throw new Error("Only draft weeks can be published.");
+      assertCanPublish(run!, next.weeks, now);
+      cancelUnledGroups(next, run!, now, actorId, requestId);
+      run!.status = "published"; run!.version++;
+      break;
     case "cancelRun": {
       requireAdmin(); requireRun();
       if (!["published", "draft"].includes(run!.status)) throw new Error("This week cannot be cancelled.");

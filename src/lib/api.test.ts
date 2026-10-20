@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("./platform", () => ({ executeMutation: vi.fn(), getPlatformSnapshot: vi.fn() }));
+vi.mock("./member-invitations", () => ({ inviteClubMember: vi.fn() }));
 import { executeMutation, getPlatformSnapshot } from "./platform";
+import { inviteClubMember } from "./member-invitations";
 import { GatewayError } from "./gateway";
 import { handleMutation } from "./api";
+import { createDemoSnapshot } from "./demo-data";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.resetAllMocks(); });
 const body = {
@@ -45,5 +48,56 @@ describe("club mutation API", () => {
     const result = await handleMutation(request(body));
     expect(result.status).toBe(409);
     expect(await result.json()).toMatchObject({ code: "STALE_VERSION", data: { bookings: [] } });
+  });
+  const newMember = { operation: "addMember", requestId: body.requestId, memberEmail: "new@example.org", name: "New Runner",
+    roles: ["runner"], active: true, sendInvitation: true };
+  function savedMembership() {
+    const data = createDemoSnapshot();
+    data.members.push({ id: "saved-id", name: newMember.name, email: newMember.memberEmail, roles: ["runner"], active: true, version: 1 });
+    vi.mocked(executeMutation).mockResolvedValue(data);
+    return data;
+  }
+  it("invites only after membership has been saved, using its server-assigned ID", async () => {
+    const data = savedMembership();
+    const invitation = { memberId: "saved-id", status: "sent" as const, message: "Invitation sent." };
+    vi.mocked(inviteClubMember).mockImplementation(async memberId => {
+      expect(executeMutation).toHaveBeenCalledOnce();
+      expect(memberId).toBe("saved-id");
+      return invitation;
+    });
+    const response = await handleMutation(request({ ...newMember, memberId: "forged" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data, invitation });
+  });
+  it("does not invite when the membership save fails", async () => {
+    vi.mocked(executeMutation).mockRejectedValue(new GatewayError("Save failed", 503));
+    expect((await handleMutation(request(newMember))).status).toBe(503);
+    expect(inviteClubMember).not.toHaveBeenCalled();
+  });
+  it.each([{ sendInvitation: false }, { active: false }, { sendInvitation: undefined }])(
+    "does not invite opted-out, inactive or legacy requests: %j", async overrides => {
+      savedMembership();
+      const response = await handleMutation(request({ ...newMember, ...overrides }));
+      expect(response.status).toBe(200);
+      expect(inviteClubMember).not.toHaveBeenCalled();
+      expect((await response.json()).invitation).toBeUndefined();
+    },
+  );
+  it("keeps saved membership and explicitly reports invitation failure without leaking provider details", async () => {
+    const data = savedMembership();
+    vi.mocked(inviteClubMember).mockRejectedValue(new Error("sensitive provider details"));
+    const response = await handleMutation(request(newMember));
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.data).toEqual(data);
+    expect(result.invitation).toMatchObject({ memberId: "saved-id", status: "failed" });
+    expect(JSON.stringify(result)).not.toContain("sensitive provider details");
+    expect(executeMutation).toHaveBeenCalledOnce();
+  });
+  it("surfaces actionable invitation configuration errors separately from the saved membership", async () => {
+    savedMembership();
+    vi.mocked(inviteClubMember).mockRejectedValue(new GatewayError("Set APP_URL before inviting.", 503, "NOT_CONFIGURED"));
+    const response = await handleMutation(request(newMember));
+    expect((await response.json()).invitation).toMatchObject({ status: "failed", message: "Set APP_URL before inviting." });
   });
 });

@@ -20,6 +20,10 @@ export async function getPlatformSnapshot(): Promise<PlatformSnapshot> {
     return visibleSnapshot(snapshot, snapshot.currentMemberId);
   }
   const identity = await getClubMember();
+  return snapshotForIdentity(identity);
+}
+
+async function snapshotForIdentity(identity: Awaited<ReturnType<typeof getClubMember>>): Promise<PlatformSnapshot> {
   const email = identity?.email;
   const data = await mutateSheet("snapshot", { email });
   const parsed = snapshotSchema.safeParse(data);
@@ -37,7 +41,7 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
   }
   const member = await getClubMember();
   if (!member) throw new GatewayError("Sign in to continue.", 401, "UNAUTHORIZED");
-  const adminOperations = ["moveRunner", "addTrialRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "importWeeklyLeaders"];
+  const adminOperations = ["moveRunner", "addTrialRunner", "createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "updateLocations", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "importWeeklyLeaders", "restoreGroup"];
   if (adminOperations.includes(mutation.operation) && !member.roles.split(",").map((role) => role.trim()).includes("admin")) {
     throw new GatewayError("Administrator access is required.", 403, "FORBIDDEN");
   }
@@ -57,7 +61,7 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
     if (error instanceof GatewayError && error.code === "STALE_IMPORT") throw new GatewayError(error.message, 409, error.code);
     throw error;
   }
-  return getPlatformSnapshot();
+  return snapshotForIdentity(member);
 }
 
 export async function previewWeeklyLeaderImport(): Promise<WeeklyLeaderImportPreview> {

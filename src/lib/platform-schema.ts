@@ -142,8 +142,9 @@ export const mutationSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("assignSweeper"), ...group, memberId: z.string().max(120).optional() }),
   z.object({ operation: z.literal("recordAttendance"), ...group, memberId: id, outcome: z.enum(["present", "absent"]) }),
   z.object({ operation: z.literal("cancelGroup"), ...group, reason: z.enum(["low-interest", "no-leader"]) }),
+  z.object({ operation: z.literal("restoreGroup"), ...group }),
   z.object({ operation: z.literal("importWeeklyLeaders"), ...base, expectedImportFingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
-  z.object({ operation: z.literal("addMember"), ...base, memberEmail: z.string().trim().toLowerCase().pipe(z.email()), name: z.string().trim().min(1).max(100), roles: memberRoles, active: z.boolean() }),
+  z.object({ operation: z.literal("addMember"), ...base, memberEmail: z.string().trim().toLowerCase().pipe(z.email()), name: z.string().trim().min(1).max(100), roles: memberRoles, active: z.boolean(), sendInvitation: z.boolean().optional() }),
   z.object({ operation: z.literal("updateMember"), ...base, memberId: id, memberVersion: version, name: z.string().trim().min(1).max(100), roles: memberRoles, active: z.boolean() }),
   z.object({ operation: z.literal("updateLocations"), ...base, location: z.string().trim().min(1).max(120), locations: z.array(z.string().trim().min(1).max(120)).min(1).max(30).superRefine((locations, context) => {
     if (new Set(locations.map((location) => location.toLowerCase())).size !== locations.length) context.addIssue({ code: "custom", message: "Venue names must be unique." });

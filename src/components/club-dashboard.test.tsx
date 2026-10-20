@@ -38,6 +38,168 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it.each(["admin", "runs"] as const)("shows a date instead of a dropdown for one %s week", view => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [{ ...snapshot.weeks[0], status: "published" }];
+    const renderPage = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view }));
+    expect(renderPage()).not.toContain('id="week"');
+    expect(renderPage()).toContain("<strong>Tue 6 Oct 2026</strong>");
+    snapshot.weeks.push({ ...snapshot.weeks[0], id: "second-week", startsAt: "2026-10-13T18:00:00Z", status: "draft" });
+    expect(renderPage()).toContain('id="week"');
+  });
+  it("separates weekly tasks from club settings in accessible Admin tabs", () => {
+    const snapshot = createDemoSnapshot(new Date(startsAt));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "admin" }));
+    expect(html).toContain('role="tablist" aria-label="Admin areas"');
+    expect(html).toContain('id="admin-tab-weekly" aria-selected="true"');
+    expect(html).toContain('id="admin-tab-settings" aria-selected="false"');
+    const weekly = html.split('id="admin-panel-weekly"')[1].split('id="admin-panel-settings"')[0];
+    const settings = html.split('id="admin-panel-settings"')[1];
+    expect(weekly).toContain('aria-labelledby="admin-tab-weekly" tabindex="0"');
+    expect(weekly).toContain("Leaders</h2>");
+    expect(weekly).toContain("Runner moves &amp; trial runners");
+    expect(weekly).not.toContain("Automation and schedule");
+    expect(weekly).not.toContain("Add member</summary>");
+    expect(settings).toContain('aria-labelledby="admin-tab-settings" hidden=""');
+    expect(settings).toContain("Automation and schedule");
+    expect(settings).toContain("Add member</summary>");
+    expect(settings).toContain("Club members</summary>");
+    expect(settings).toContain("Default location");
+  });
+  it.each([
+    ["runs", "/"], ["detail", "/"], ["profile", "/profile"], ["leader", "/leader"], ["admin", "/admin"],
+  ] as const)("marks only the current %s navigation tab", (view, href) => {
+    const snapshot = createDemoSnapshot(new Date(startsAt));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view }));
+    expect(html.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(html.match(/<a[^>]*aria-current="page"[^>]*>/)?.[0]).toContain(`href="${href}"`);
+    if (view === "admin") expect(html).toContain('<main class="admin-workspace">');
+    else expect(html).not.toContain('class="admin-workspace"');
+  });
+  it("shows actionable readiness for missing leaders, ready drafts, published and closed runs", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [snapshot.weeks[0]];
+    const run = snapshot.weeks[0];
+    run.status = "draft";
+    snapshot.groups = snapshot.groups.filter(group => group.runId === run.id).slice(0, 1);
+    const group = snapshot.groups[0];
+    group.cancelled = false;
+    group.leaderId = undefined;
+    const readiness = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }))
+      .split('aria-label="Run readiness">')[1].split("</ul>")[0];
+    expect(readiness()).toContain("Draft — ready to publish; groups without eligible leaders will be marked not running.");
+    expect(readiness()).toContain('href="#volunteers"');
+    expect(readiness()).toContain('href="#run-controls"');
+    expect(readiness()).toContain("bookings will be cancelled on publication");
+    group.leaderId = snapshot.members.find(member => member.active && member.roles.includes("leader"))!.id;
+    expect(readiness()).toContain("Draft — ready to publish");
+    expect(readiness()).toContain('href="#run-controls"');
+    snapshot.config.weeklyAutomationEnabled = true;
+    expect(readiness()).toContain("Scheduled publication is overdue");
+    expect(readiness()).not.toContain("await scheduled publication");
+    run.status = "published";
+    expect(readiness()).toContain("Ready for runners");
+    run.status = "draft";
+    run.bookingClosesAt = new Date(now - 1000).toISOString();
+    expect(readiness()).toContain("Booking window has closed");
+    expect(readiness()).not.toContain("Draft — ready to publish");
+  });
+  it.each(["2026-10-06T12:00:00Z", "2026-10-06T22:00:00Z"])("hides Admin history and keeps today's run selected at %s", (time) => {
+    const now = Date.parse(time);
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    const current = { ...snapshot.weeks[0], id: "current-run", status: "published" as const };
+    snapshot.weeks = [
+      { ...current, id: "archived-run", status: "archived" },
+      { ...current, id: "cancelled-run", status: "cancelled" },
+      current,
+      { ...current, id: "upcoming-draft", status: "draft", startsAt: "2026-10-13T18:00:00Z" },
+    ];
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    const picker = html.split('id="week"')[1].split("</select>")[0];
+    expect(picker).toContain('value="current-run"');
+    expect(picker).toContain('value="current-run" selected=""');
+    expect(picker).toContain('value="upcoming-draft"');
+    expect(picker).not.toContain('value="archived-run"');
+    expect(picker).not.toContain('value="cancelled-run"');
+    expect(html).not.toContain('id="history-week"');
+    expect(html).not.toContain('class="week-history"');
+  });
+  it("does not automatically select history when Admin has no current or upcoming runs", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [{ ...snapshot.weeks[0], status: "archived" }];
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    expect(html).toContain("No current or upcoming runs");
+    expect(html).not.toContain('id="history-week"');
+    expect(html).not.toContain("Run readiness");
+  });
+  it("offers Restore group only for cancelled groups in future draft or published runs", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [snapshot.weeks[0]];
+    snapshot.weeks[0].status = "published";
+    snapshot.groups = snapshot.groups.filter(group => group.runId === snapshot.weeks[0].id);
+    snapshot.groups.forEach(group => { group.cancelled = false; });
+    const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    expect(renderAdmin()).toContain('<table class="leader-assignments">');
+    expect(renderAdmin()).toContain('<th scope="col">Places</th>');
+    expect(renderAdmin()).toContain('aria-label="Leader for Group');
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+    snapshot.groups[0].cancelled = true;
+    expect(renderAdmin()).toContain('<span class="badge cancelled">Not running</span>');
+    expect(renderAdmin().match(/>Restore group<\/button>/g)).toHaveLength(1);
+    snapshot.weeks[0].status = "draft";
+    expect(renderAdmin()).toContain(">Restore group</button>");
+    snapshot.weeks[0].status = "cancelled";
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+    snapshot.weeks[0].status = "archived";
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+    snapshot.weeks[0].status = "published";
+    snapshot.weeks[0].startsAt = new Date(now - 1).toISOString();
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+  });
+  it("separates the default venue from the Maps editor and add-location form", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    const mapsForm = html.split('<form class="venue-editor">')[1]?.split("</form>")[0];
+    expect(mapsForm).toContain("Edit Maps link for");
+    expect(mapsForm).toContain("Google Maps link");
+    expect(mapsForm).toContain("Save Maps link");
+    expect(mapsForm).not.toContain("Default location");
+    expect(html).toContain('<div class="venue-default"><label for="club-location">Default location');
+  });
+  it("keeps admin add and save buttons in local feedback containers", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    for (const label of ["Add location", "Save Maps link", "Create draft week", "Move runner", "Add trial runner", "Add member"]) {
+      expect(html).toMatch(new RegExp(`<div class="action-feedback"><button[^>]*>${label}</button>`));
+    }
+    expect(html).not.toContain('class="notice" role="status"');
+  });
+  it("shows Add member in its own panel before the searchable club members panel", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    const addPanel = html.slice(html.indexOf('<section class="panel member-onboarding-panel">')).split("</section>")[0];
+    expect(addPanel).toContain("<summary>Add member</summary>");
+    expect(addPanel).not.toContain("Search members");
+    expect(html).toMatch(/<\/section><section class="panel"><details[^>]*><summary>Club members<\/summary>/);
+    expect(html.indexOf("<summary>Add member</summary>")).toBeLessThan(html.indexOf("<summary>Club members</summary>"));
+  });
   it("offers admins a name-only trial runner booking without member details", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(initialNow));
@@ -135,20 +297,22 @@ describe("leader attendance clock", () => {
     snapshot.weeks[0].status = "draft";
     const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
     const html = renderAdmin();
-    expect(html).toContain("Next Tuesday ·");
+    expect(html).toContain("Today&#x27;s run ·");
     expect(html).toContain('class="panel next-tuesday-panel"');
     const advancedStart = html.indexOf('<details class="admin-disclosure advanced-controls"');
     const volunteersStart = html.indexOf('<section class="panel" id="volunteers">');
     const advancedHtml = html.slice(advancedStart, volunteersStart);
-    expect(advancedHtml).toContain("<summary>Automation and schedule");
-    expect(advancedHtml).toContain("<summary>Create an additional draft manual run</summary>");
+    expect(advancedHtml).not.toContain("Automation and schedule");
+    expect(advancedHtml).toContain("<summary>Create draft run</summary>");
+    expect(advancedHtml).toContain("It stays a draft until published.");
     expect(advancedHtml.match(/<details/g)).toHaveLength(advancedHtml.match(/<\/details>/g)?.length ?? 0);
     expect(html.indexOf("<summary>Runner moves &amp; trial runners</summary>")).toBeGreaterThan(volunteersStart);
     expect(html.indexOf("<summary>Group popularity</summary>")).toBeGreaterThan(volunteersStart);
-    expect(html).toContain("Leader readiness:");
+    expect(html).toContain("Leader coverage:");
+    expect(html).toContain('aria-label="Run readiness"');
     expect(html).toContain("<dt>Last successful check</dt>");
     expect(html).toContain("Automation and schedule");
-    expect(html).toContain("Selected run overrides");
+    expect(html).toContain("Run actions");
     expect(html).toContain("Not recorded");
     expect(html).toContain("Timer operation is unverified");
     expect(html).toContain('aria-pressed="true"');
@@ -201,7 +365,7 @@ describe("leader attendance clock", () => {
     expect(html).toContain("Booking fill</span><strong>Not available</strong>");
     expect(html).not.toContain("Average recorded attendees");
   });
-  it("shows blocked automation and time controls with stable Admin clock rendering", () => {
+  it("shows publication warnings and time controls with stable Admin clock rendering", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-06T12:00:00Z"));
     snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
     snapshot.config.weeklyAutomationEnabled = true;
@@ -212,8 +376,8 @@ describe("leader attendance clock", () => {
     const adminHtml = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
     vi.setSystemTime(new Date("2026-10-01T12:00:00Z"));
     const html = adminHtml();
-    expect(html).toContain("Publication blocked");
-    expect(html).toContain("needs an eligible leader");
+    expect(html).toContain("groups without eligible leaders will be marked not running");
+    expect(html).not.toContain("Publication blocked");
     expect(html).toContain("Start time for this week");
     expect(html).toContain("Sunday publication time");
     vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
@@ -227,7 +391,9 @@ describe("leader attendance clock", () => {
     expect(html).toContain("Add member</summary>");
     snapshot.demo = false;
     const liveHtml = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "admin" }));
-    expect(liveHtml).toContain("Import weekly leaders</summary>");
+    expect(liveHtml).toContain("Import weekly leaders</h2>");
+    expect(liveHtml).toContain('class="run-summary-columns"');
+    expect(liveHtml.indexOf('class="weekly-leader-import"')).toBeLessThan(liveHtml.indexOf('id="run-controls"'));
     expect(liveHtml).toContain("Preview import");
     expect(liveHtml).not.toContain("Existing leaders in listed groups may be replaced");
   });
