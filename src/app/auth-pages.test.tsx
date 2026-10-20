@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@clerk/nextjs", () => ({
-  SignIn: () => <div>Clerk sign-in</div>,
+  SignIn: ({ appearance }: { appearance: { elements: { headerTitle: React.CSSProperties } } }) =>
+    <div><h1 style={appearance.elements.headerTitle}>Clerk sign-in</h1></div>,
   SignUp: () => <div>Clerk account setup</div>,
 }));
 vi.mock("@/components/club-brand", () => import("../components/club-brand"));
@@ -22,6 +23,7 @@ describe("Clerk authentication pages", () => {
   it("offers password login rather than Google or magic links", () => {
     const html = renderToStaticMarkup(createElement(SignInPage));
     expect(html).toContain("Clerk sign-in");
+    expect(html).toContain('style="font-size:1.25rem;line-height:1.4"');
     expect(html).toContain("username or email and password");
     expect(html).not.toContain("Google");
     expect(html).not.toContain("magic link");

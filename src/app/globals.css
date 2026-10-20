@@ -284,7 +284,7 @@ th { background: #edf5f2; }
 .site-footer strong { color: var(--club-charcoal); }
 .auth-main { max-width: 940px; }
 .auth-content { max-width: 640px; padding: 3.5rem 0 5rem; }
-.auth-content h1 { font-size: 3rem; }
+.auth-content > h1 { font-size: 3rem; }
 .auth-content h2 { margin-top: 2rem !important; }
 .auth-content > p { max-width: 58ch; }
 
