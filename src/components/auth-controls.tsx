@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { signOut } from "next-auth/react";
+import { SignOutButton } from "@clerk/nextjs";
 
 export function SignIn() {
-  return <Link href="/auth/signin">Sign In</Link>;
+  return <Link href="/sign-in">Sign In</Link>;
 }
 
 export function SignOut() {
-  return <button type="button" onClick={() => void signOut({ callbackUrl: "/" })}>Sign Out</button>;
+  return <SignOutButton redirectUrl="/"><button type="button">Sign Out</button></SignOutButton>;
 }

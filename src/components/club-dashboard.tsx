@@ -90,7 +90,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     try {
       const response = await fetch("/api/platform", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ operation: request.operation, requestId: request.requestId, ...request.payload }) });
-      if (response.status === 401) { uncertainRequests.current.delete(intent); setRetry(undefined); router.push("/auth/signin"); return; }
+      if (response.status === 401) { uncertainRequests.current.delete(intent); setRetry(undefined); router.push("/sign-in"); return; }
       if (response.status >= 400 && response.status < 500) uncertainRequests.current.delete(intent);
       const body = await response.json();
       if (response.status === 409 && body.data) setSnapshot(body.data);
@@ -154,7 +154,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     </header>
     {message && <p className={failure ? "notice error" : "notice"} role={failure ? "alert" : "status"}>{message}</p>}
     {retry && <p><button disabled={pending} className="secondary" onClick={() => void mutate(retry.operation, retry.payload)}>Retry last save safely</button></p>}
-    {(view !== "runs" && !snapshot.currentMemberId && !(snapshot.demo && view === "detail")) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/auth/signin">Sign in</Link></section> :
+    {(view !== "runs" && !snapshot.currentMemberId && !(snapshot.demo && view === "detail")) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/sign-in">Sign in</Link></section> :
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
       view === "profile" ? <Profile snapshot={snapshot} now={now} /> : <>

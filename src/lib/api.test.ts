@@ -21,9 +21,9 @@ describe("club mutation API", () => {
     expect(executeMutation).not.toHaveBeenCalled();
   });
   it("fails closed for malformed origin configuration", async () => {
-    vi.stubEnv("NEXTAUTH_URL", "javascript:invalid");
+    vi.stubEnv("APP_URL", "javascript:invalid");
     expect((await handleMutation(request(body, "null"))).status).toBe(403);
-    vi.stubEnv("NEXTAUTH_URL", "");
+    vi.stubEnv("APP_URL", "");
     expect((await handleMutation(request(body))).status).toBe(403);
     expect(executeMutation).not.toHaveBeenCalled();
   });

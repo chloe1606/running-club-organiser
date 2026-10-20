@@ -7,9 +7,9 @@ export default function AuthErrorPage() {
     <section className="auth-content">
     <p className="eyebrow">Sign-in help</p>
     <h1 style={{ fontSize: "3rem" }}>Let&apos;s try again</h1>
-    <p className="intro" role="alert">Sign-in could not be completed. Your email link may have expired or already been used.</p>
-    <p>Request a fresh link or try Google using your membership email address. If you still cannot sign in, contact the club organiser.</p>
-    <Link href="/auth/signin">Back to sign-in</Link>
+    <p className="intro" role="alert">Sign-in could not be completed.</p>
+    <p>Sign in with your username or email and password. You can reset a forgotten password on the sign-in screen. If you still cannot sign in, contact the club organiser.</p>
+    <Link href="/sign-in">Back to sign-in</Link>
     </section>
   </main>;
 }

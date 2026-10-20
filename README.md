@@ -1,6 +1,6 @@
 # Tuesday Club Runs
 
-The existing Next.js App Router / TypeScript application, backed by Google Sheets and a locked, server-only Apps Script gateway. Google sign-in and email magic links identify the **same active club member**; neither creates club membership or grants roles.
+The Next.js App Router / TypeScript application is backed by Google Sheets and a locked, server-only Apps Script gateway. Clerk manages invitation-only username/email-and-password login. Only active Google Sheets membership grants club access and roles; a Clerk account alone does not.
 
 ## Local development and isolated preview
 
@@ -14,7 +14,7 @@ For a populated preview set `CLUB_DEMO_MODE=true`. Demo personas, names, booking
 
 The preview has 13 groups with varied occupancy and waitlists plus roughly 12 historical weeks. Its current week is relative to the upcoming Tuesday, not a fixed expired date. Runner view opens the current bookable week first, tucks past runs into a disclosure and selector, and labels public status Bookings open, Bookings closed or Cancelled. Own bookings are prominent; a waitlist place is explicitly not confirmed.
 
-Available checks: `npm test`, `npm run lint`, `npm run build`. External services are mocked in automated tests; passing them does not verify Google OAuth, SMTP delivery, Apps Script permissions or a real workbook.
+Available checks: `npm test`, `npm run lint`, `npm run build`. External services are mocked in automated tests; passing them does not verify Clerk email delivery, Apps Script permissions or a real workbook.
 
 ## Owner confirmation required before publication
 
@@ -22,18 +22,22 @@ The scaffold's Riverside Pavilion, Meadow Lane and Tuesday 18:30 are **editable 
 
 Configure 1–20 groups with unique positive numbers up to 20 in the workbook; decimal labels such as `1.5` are supported. Each group can hold 1–20 confirmed people, including its leader and optional sweeper; a person filling both roles consumes one place. Membership can have overlapping comma-separated roles: `runner`, `leader`, `sweeper`, `admin`. Display names are never identity keys.
 
-## Authentication setup (NextAuth v4)
+## Authentication setup (Clerk)
 
-1. Generate `NEXTAUTH_SECRET` with `openssl rand -base64 32`; keep it stable and identical across instances. This application requires that explicit setting; do not rely on the old scaffold's `AUTH_SECRET` alias.
-2. Set `NEXTAUTH_URL` to the application's canonical origin, e.g. `https://runs.example.org`; use `http://localhost:3000` locally. Callback redirects are restricted to that origin.
-3. Create a Google OAuth web client. Register `/api/auth/callback/google` on each explicitly allowed application origin as an authorized redirect URI. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A non-Gmail Google account is supported, but Google's `email_verified` must be true.
-4. Configure SMTP with `EMAIL_SERVER_HOST`, `EMAIL_SERVER_PORT`, `EMAIL_SERVER_USER`, `EMAIL_SERVER_PASSWORD`, and `EMAIL_FROM` (your verified sender). For Brevo, use `smtp-relay.brevo.com` on port `587`, with the SMTP login and SMTP key. Configure the sender's SPF/DKIM/DMARC with your mail provider; test spam filtering and delivery. Leaving SMTP unset disables only the email option, not otherwise configured Google sign-in.
-5. Set up the persistent protected auth storage and deploy **all three** Apps Script files as described below. Email links cannot work without persistent adapter storage, even with JWT sessions.
-6. Add trusted club users before testing live login. Normalize email with trim/lowercase; duplicate normalized emails or stable IDs are rejected. Do not use demo accounts for live membership.
+1. Use the selected Clerk application, `app_3KxEHInwVYZ3iSq5DoNr41ctENE`. CLI access requires `npx -y clerk@latest auth login` in your own terminal. The project is already initialised; do not create a replacement application.
+2. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and the server-only `CLERK_SECRET_KEY` from the same Clerk instance in local/hosting configuration. Set `APP_URL` to the canonical application origin, e.g. `https://runs.example.org` or `http://localhost:3000`. Sign-in and account setup use `/sign-in` and `/sign-up`.
+3. In Clerk's **User & authentication**, require username, password and a verified email. Allow username or email as the password-login identifier, disable Google/social sign-in and email-link/code sign-in, and keep email-code verification and password recovery. Device trust may also request an email verification code on a new device; this is not magic-link login.
+4. Use **Restricted / invitation-only** sign-up. Invite members from Clerk's Users dashboard using their exact club roster email. Invitations create login accounts, not club membership. Add active membership through Admin > Club members separately; no automatic invite is sent by the app's Add member action.
+5. Clerk delivers authentication emails, including invitations, verification and password recovery. The app no longer uses Google OAuth, NextAuth or SMTP for login; old `NEXTAUTH_*`, `GOOGLE_CLIENT_*` and `EMAIL_*` login variables can be retired from deployment configuration. Keep Google Sheets service-account and gateway configuration.
+6. Before production, create/configure the Clerk production instance, verify your domain and required DNS records, apply the same invitation/password settings, set production keys, and test with a staging workbook. Development and production users/settings are separate; this change does not configure or deploy production.
 
-Sign-in, check-inbox/resend and error screens live under `/auth`. Email requests use a generic response, including nonmembers and cooldown requests. Tokens expire after 15 minutes. NextAuth generates cryptographically random tokens and hashes them before persistence; the gateway consumes tokens under the shared lock, so replay or simultaneous redemption cannot reuse them. Google and email must resolve to the same trusted stable member ID. OAuth account linking is not globally enabled for untrusted emails.
+The development Clerk instance is configured for invitation-only username/password login with Google and passwordless sign-in disabled. Account creation requires a verified email matching active club membership. On the first successful member lookup the server binds Clerk's `externalId` to the existing stable club member ID. Subsequent requests require that same ID and the current verified primary email; changing an email cannot switch club identities. A conflicting binding requires organiser intervention, never automatic reassignment.
 
-Only trusted active membership supplies roles. Protected pages/data and mutations recheck membership, including after an account is deactivated. Roster APIs expose display names, not other members' email addresses; personal attendance/history is limited to its owner except assigned leaders' rosters and administrators' operational access. Auth records, SMTP credentials, tokens and the gateway secret are never returned in club snapshots.
+Clerk's built-in Frontend API proxy is enabled at `/__clerk`, including its static asset paths. For a proxied Vercel deployment, set `NEXT_PUBLIC_CLERK_PROXY_URL=https://your-production-domain/__clerk` in Vercel's Production environment variables and redeploy. Then configure that same URL in Clerk Production > Domains > Frontend API > Set proxy configuration. No separate Vercel rewrite is needed. The SDK derives the server-side proxy URL; the public variable routes browser requests through it. Explicit demo mode continues to bypass Clerk.
+
+Existing member IDs, bookings, attendance and roles remain in Sheets unchanged. There are no existing password hashes to import. Previous NextAuth sessions and magic links are not accepted; every member must set up Clerk credentials. Legacy `/auth/signin` and `/auth/check-inbox` links redirect to Clerk sign-in; the old NextAuth API endpoints have been removed.
+
+Only trusted active membership supplies roles. Protected pages/data and mutations recheck membership, including after an account is deactivated. Roster APIs expose display names, not other members' email addresses; personal attendance/history is limited to its owner except assigned leaders' rosters and administrators' operational access. Clerk credentials, sessions, tokens and the gateway secret are never returned in club snapshots. The public runs page remains available without login; explicit demo mode bypasses Clerk and never touches the live workbook.
 
 ## Server configuration and Apps Script deployment
 
@@ -48,26 +52,13 @@ Unset settings fail closed. Authorize the owner-run setup functions for spreadsh
 
 After changing scripts, create a **new deployment version**, update the existing deployment to that version and verify the configured `/exec` URL. A source save alone does not update a deployed Web App. Protect the workbook and auth sheets from ordinary members; hidden tabs alone are not access control. Membership and booking sheets are not intended for concurrent manual editing while the service is live.
 
-### OAuth callback troubleshooting
+### Authentication troubleshooting and legacy data
 
-`adapter_error_getUserByAccount` followed by `OAUTH_CALLBACK_HANDLER_ERROR` means the persistent account lookup failed; a missing account normally returns `null` and is not an error. In development, the adapter log includes only allowlisted gateway codes or an invalid-record label, never upstream messages or identity details. Production logs remain generic.
+Run `npx -y clerk@latest doctor` for integration checks. If a signed-in user sees **Club membership required**, verify their primary Clerk email, active roster entry and stable `externalId` binding. Do not grant roles in editable Clerk user metadata; Sheets remains the authority. Provider or workbook failures show an explicit service error, never demo data.
 
-- `NON_JSON_RESPONSE`: the gateway returned HTML or another non-JSON body, even if its HTTP status was 200. Verify the current Web App `/exec` URL, execute-as-owner setting, deployment version and access policy. The server sends a shared secret, not a signed-in Google browser session; a browser successfully opening the URL does not prove server access. If Workspace policy forbids server-reachable access, use an authenticated gateway integration rather than weakening the policy.
-- `UNAUTHORIZED`: match the server's `APPS_SCRIPT_GATEWAY_SECRET` to the script's `GATEWAY_SECRET`.
-- `WORKBOOK_MISMATCH`: match `GOOGLE_SHEET_ID` to the script's `SPREADSHEET_ID`.
-- `NOT_CONFIGURED` or `UNKNOWN_OPERATION`: deploy `Code.gs`, `Storage.gs` and `Auth.gs` together as a new version, and verify the script properties.
-- `AUTH_UNAVAILABLE`: check owner authorization, spreadsheet access, hidden auth-sheet headers and protections in Apps Script. Do not delete existing auth records to work around a setup error.
-- `INVALID_RESPONSE` or `invalid auth record`: check the deployed response format or stored record schema without copying private records into logs.
+Keep the existing Apps Script deployment and legacy auth tabs protected. `Auth.gs` is retained for compatibility with the workbook's storage tooling, but the web app no longer invokes its NextAuth operations. No legacy auth records are deleted or migrated automatically. Back up and plan any later cleanup separately. **Do not grant ordinary members workbook read access**; hiding/protecting tabs is not reader access control.
 
-### Persistent auth storage
-
-The adapter lazily creates `AuthUsers`, `AuthAccounts`, `AuthSessions` and `AuthEmailRequests`, each with `key`, `record` columns. The second column is an auth-only JSON record. They are hidden and write-protected for the executing owner. **Do not grant members workbook read access**: sheet protection does not restrict readers. These records are never part of a platform snapshot or roster API. `AuthSessions` supports the adapter interface; this application uses NextAuth's JWT sessions.
-
-Email request records contain only the hashed verification token, normalized identifier, expiry, issuance timestamp, eligibility and consumed marker. The persistent limit is five requests per address per hour with a 60-second resend cooldown, including denied and nonmember requests. Both provider sending and adapter persistence coordinate on the same token record under the lock. Consumption commits before returning the token; a failure afterward errs toward consuming a link rather than making replay possible. A request can therefore require a new link after an uncertain redemption failure.
-
-Keep SMTP and OAuth tokens out of logs, monitor gateway quotas and auth-record growth, and restrict backup access just as strictly as the live workbook. Membership remains separate: after canonical migration, authentication reads committed membership rather than the legacy `Members` table or lagging `Users` display projection.
-
-Next.js incoming-request logging is disabled because email callback URLs carry bearer tokens; auth responses use `Referrer-Policy: no-referrer` and are not cacheable. Also configure your hosting/reverse proxy, mail provider and observability tools to omit/redact auth query strings and request bodies. Application settings cannot sanitize a separately managed proxy's access logs.
+Incoming request logging stays disabled and authentication pages use `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Configure hosting/reverse-proxy and observability tools to redact auth parameters too.
 
 ## Optional weekly automation
 
@@ -141,13 +132,13 @@ Bookings are intent; attendance is an explicitly recorded outcome, not inferred 
 
 - Back up a staging workbook; perform migration there first and compare IDs, roles, historical totals and unknown attendance.
 - Confirm real club configuration and 13 definitions before publication; validate UK DST transitions and cutoff locally.
-- Check Google sign-in (verified Gmail and non-Gmail accounts), email-only sign-in, cross-provider identity, sign-out, expired/replayed links and resend cooldown.
-- Confirm generic nonmember/deactivated responses and direct provider-endpoint throttling; deactivate a signed-in member and verify mutations fail.
+- Check invitation acceptance, username/email-and-password login, verified primary email, password recovery, sign-out and expired invitations. Confirm Google/magic-link sign-in is absent and old NextAuth sessions are not accepted.
+- Confirm nonmember/deactivated accounts cannot obtain private data or mutate bookings; deactivate a signed-in member and verify mutations fail. Verify changing a Clerk email cannot switch member IDs.
 - Simulate competing last-place requests from two browsers, retries, FIFO promotion, rejected switch and full-destination move.
 - Verify leader/runner cannot call admin operations directly, and leaders cannot edit unassigned groups.
 - Confirm member-only rosters, no email/token/secret leakage, own-history privacy, mobile keyboard/focus and visible queue refresh.
 - Verify draft retry/tab uniqueness, copied-route review, publication policy, cancellation, attendance and archival.
-- Test SMTP delivery and gateway recovery/error handling. Monitor Apps Script quotas and workbook growth.
+- Test Clerk invitation, verification and password-reset delivery plus gateway recovery/error handling. Monitor Apps Script quotas and workbook growth.
 
 No production deployment or destructive real-workbook migration is part of this change. Credentials, sender verification, workbook permissions, club configuration and the real-service smoke checks remain owner setup responsibilities.
 
@@ -155,4 +146,4 @@ No production deployment or destructive real-workbook migration is part of this 
 
 Mock-backed tests and read-only local browser checks do not prove delivery or access to a live service. They do not install or verify Google triggers, exercise production writes, or constitute a security scan. Run the owner staging smoke checklist and appropriate security validation before production use.
 
-NextAuth remains on v4. The Next.js patch update addresses existing runtime advisories; this is not a framework migration. Nodemailer is explicitly installed for SMTP, with a package override keeping NextAuth on the same transport version. Remaining existing transitive/development advisories should be reviewed with `npm audit` rather than assuming every dependency is vulnerability-free.
+Clerk replaces NextAuth and Nodemailer for authentication. Review remaining dependency advisories with `npm audit` rather than assuming every dependency is vulnerability-free. Automated tests do not prove end-to-end Clerk email delivery or production configuration.

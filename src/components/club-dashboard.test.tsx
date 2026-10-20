@@ -6,6 +6,9 @@ import { visibleSnapshot } from "../lib/privacy";
 import { bookingName, ClubDashboard, runnerStatus } from "./club-dashboard";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
+vi.mock("@clerk/nextjs", () => ({
+  SignOutButton: ({ children }: { children: React.ReactNode }) => children,
+}));
 vi.mock("@/lib/domain", () => import("../lib/domain"));
 vi.mock("@/lib/analytics", () => import("../lib/analytics"));
 vi.mock("@/lib/locations", () => import("../lib/locations"));

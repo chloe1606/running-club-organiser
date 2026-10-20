@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
-  // Incoming auth URLs can contain single-use bearer tokens.
+  // Authentication URLs can contain sensitive verification parameters.
   logging: { incomingRequests: false },
   async headers() {
     return [{
@@ -13,6 +13,18 @@ const config: NextConfig = {
     }, {
       source: "/auth/:path*",
       headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+    }, {
+      source: "/sign-in/:path*",
+      headers: [
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "Cache-Control", value: "no-store" },
+      ],
+    }, {
+      source: "/sign-up/:path*",
+      headers: [
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "Cache-Control", value: "no-store" },
+      ],
     }];
   },
 };
