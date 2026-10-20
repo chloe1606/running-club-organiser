@@ -22,7 +22,7 @@ import { clubDate, clubDateTime, nextTuesdayDate, publicationBlockers, sundayPub
 
 export type Mutate = (operation: string, payload: Record<string, unknown>, onSuccess?: (invitation?: MemberInvitationResult) => void) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
-  return new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(new Date(value));
+  return new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(new Date(value)).replace(",", "");
 }
 export function memberName(snapshot: PlatformSnapshot, id?: string) {
   return snapshot.members.find(m => m.id === id)?.name ?? (id ? "Club member" : "To be assigned");
@@ -66,6 +66,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     (view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : sortedWeeks)[0]?.id ?? "",
   );
   const [pending, setPending] = useState(false);
+  const [adminTab, setAdminTab] = useState<"weekly" | "settings">("weekly");
   const saving = useRef(false);
   const [message, setMessage] = useState("");
   const [failure, setFailure] = useState(false);
@@ -82,7 +83,8 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   const selectionWeeks = view === "admin" ? activeWeeks : availableWeeks;
   const effectiveSelectedId = selectionWeeks.some(week => week.id === selectedId) ? selectedId : selectionWeeks[0]?.id ?? "";
   const run = availableWeeks.find(r => r.id === effectiveSelectedId);
-  const pickerWeeks = view === "admin" ? activeWeeks : view === "runs" ? [...activeWeeks, ...(run && historicalWeeks.includes(run) ? [run] : [])] : availableWeeks;
+  const pickerWeeks = view === "admin" || view === "runs" ? activeWeeks : availableWeeks;
+  const showWeekPicker = (view !== "admin" && view !== "runs") || pickerWeeks.length > 1;
   const selectWeek = (id: string) => setSelectedId(id);
   const meetingLocation = run?.location ?? snapshot.config.location;
   const mutate: Mutate = async (operation, payload, onSuccess) => {
@@ -165,11 +167,22 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
       view === "profile" ? <Profile snapshot={snapshot} now={now} /> : <>
-        <section className="week-bar" aria-label="Selected week">
-          <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || !pickerWeeks.length} value={pickerWeeks.some(week => week.id === effectiveSelectedId) ? effectiveSelectedId : ""} onChange={e => selectWeek(e.target.value)}>
-            {view === "admin" && !pickerWeeks.some(week => week.id === effectiveSelectedId) && <option value="">{pickerWeeks.length ? "Choose a current or upcoming run" : "No current or upcoming runs"}</option>}
+        {view === "admin" && <div className="admin-tabs" role="tablist" aria-label="Admin areas">
+          {(["weekly", "settings"] as const).map(tab => <button key={tab} type="button" role="tab" id={`admin-tab-${tab}`}
+            aria-selected={adminTab === tab} aria-controls={`admin-panel-${tab}`} tabIndex={adminTab === tab ? 0 : -1}
+            onClick={() => setAdminTab(tab)} onKeyDown={event => {
+              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === "Home" ? "weekly" : event.key === "End" ? "settings" : tab === "weekly" ? "settings" : "weekly";
+              setAdminTab(next);
+              document.getElementById(`admin-tab-${next}`)?.focus();
+            }}>{tab === "weekly" ? "Weekly tasks" : "Club settings"}</button>)}
+        </div>}
+        <section className="week-bar" aria-label="Selected week" hidden={view === "admin" && adminTab === "settings"}>
+          {showWeekPicker ? <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || !pickerWeeks.length} value={pickerWeeks.some(week => week.id === effectiveSelectedId) ? effectiveSelectedId : ""} onChange={e => selectWeek(e.target.value)}>
+            {!pickerWeeks.some(week => week.id === effectiveSelectedId) && <option value="">Choose a current or upcoming run</option>}
             {pickerWeeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt, snapshot.config.timeZone)} · {runnerView ? runnerStatus(w, now) : w.status}</option>)}
-          </select></label>
+          </select></label> : <p><strong>{run ? dateLabel(run.startsAt, snapshot.config.timeZone) : "No current or upcoming runs"}</strong></p>}
           {run && <div><span className={`badge ${run.status}`}>{runnerView ? runnerStatus(run, now) : run.status}</span><p>{run.status === "published" ? `Booking ${Date.parse(run.bookingClosesAt) <= now ? "closed" : "closes"} ${dateLabel(run.bookingClosesAt, snapshot.config.timeZone)} at ${new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.bookingClosesAt))}` : "Historical and draft weeks are not open for bookings."}</p></div>}
         </section>
         {view === "runs" && admin && historicalWeeks.length > 0 && <details className="week-history"><summary>Past runs · {historicalWeeks.length}</summary>
@@ -179,7 +192,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
           {activeWeeks.length > 0 && <button className="secondary" onClick={() => selectWeek(activeWeeks.find(week => bookingIsOpen(week, new Date(now)))?.id ?? activeWeeks[0].id)}>Back to upcoming run</button>}
         </details>}
         {run?.cancellationReason && <p className="notice error"><strong>Run cancelled:</strong> {run.cancellationReason}</p>}
-        {!run && <p className="notice">{view === "leader" ? "You’re not leading any run weeks yet." : "No run weeks are available yet."}</p>}
+        {!run && (view !== "admin" || adminTab === "weekly") && <p className="notice">{view === "leader" ? "You’re not leading any run weeks yet." : "No run weeks are available yet."}</p>}
         {view === "runs" && run && <BookingGroups snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} />}
         {view === "detail" && run && (() => {
           const group = snapshot.groups.find(g => g.id === groupId);
@@ -189,7 +202,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
           {groups.filter(g => g.leaderId === snapshot.currentMemberId).map(g => <LeaderGroup key={`${g.id}:${g.version}`} snapshot={snapshot} run={run} group={g} mutate={mutate} pending={pending} now={now} />)}
           {!groups.some(g => g.leaderId === snapshot.currentMemberId) && <p className="notice">You have no assigned groups for this week.</p>}
         </section>}
-        {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} selectWeek={selectWeek} />}
+        {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} selectWeek={selectWeek} tab={adminTab} />}
       </>}
     <footer className="site-footer"><strong>Better together.</strong><span>PETTS WOOD RUNNERS Tuesday Club Runs</span></footer>
   </main></SavingProvider>;
@@ -311,7 +324,7 @@ function WeekTimeEditor({ snapshot, run, mutate, pending, now }: { snapshot: Pla
   </form>;
 }
 
-function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { snapshot: PlatformSnapshot; run?: Run; groups: Group[]; mutate: Mutate; pending: boolean; now: number; selectWeek: (id: string) => void }) {
+function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek, tab }: { snapshot: PlatformSnapshot; run?: Run; groups: Group[]; mutate: Mutate; pending: boolean; now: number; selectWeek: (id: string) => void; tab: "weekly" | "settings" }) {
   const memberPageSize = 5;
   const configuredLocations = snapshot.config.locations?.length ? snapshot.config.locations : DEFAULT_LOCATIONS;
   const locationOptions = [...new Set([...configuredLocations, ...(snapshot.config.location && !/\bDEMO\b/i.test(snapshot.config.location) ? [snapshot.config.location] : [])])]
@@ -420,6 +433,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     });
   }
   return <div className="stack admin-dashboard">
+    <div className="stack admin-tab-panel" id="admin-panel-weekly" role="tabpanel" aria-labelledby="admin-tab-weekly" hidden={tab !== "weekly"} tabIndex={0}>
     <section className="panel next-tuesday-panel">
       <div className={snapshot.demo ? undefined : "run-summary-columns"}>
       <div className="run-summary-details"><h2>{run ? `${clubDate(new Date(run.startsAt), snapshot.config.timeZone) === clubDate(new Date(now), snapshot.config.timeZone) ? "Today's run" : run.id === nextRun?.id ? "Upcoming run" : "Selected run"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Upcoming run"}</h2>
@@ -452,34 +466,16 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}{unled > 0 && ` · ${unled} groups without eligible leaders will be marked not running on publication.`}</span></li>;
       })}</ul></>}
       <details className="admin-disclosure advanced-controls" id="run-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
-      <details className="admin-disclosure" suppressHydrationWarning><summary>Automation and schedule · {snapshot.config.weeklyAutomationEnabled ? "On" : "Off"}</summary><div className="disclosure-content">
-      <div className="automation-health" aria-label="Automation health">
-      <h3>Scheduler status</h3>
-      <dl className="scheduler-status">
-        <div><dt>Publication schedule</dt><dd>Sunday {snapshot.config.weeklyPublishTime ?? "18:00"} · {snapshot.config.timeZone}</dd></div>
-        <div><dt>Last successful check</dt><dd>{lastCheck ? localTimestamp(lastCheck) : "Not recorded"}{snapshot.demo && " (demo only)"}</dd></div>
-        <div><dt>{Date.parse(nextPublication) <= now ? "Publication due" : "Next publication"}</dt><dd>{snapshot.config.weeklyAutomationEnabled ? localTimestamp(nextPublication) : "Automatic publication off"}</dd></div>
-      </dl>
-      {!snapshot.demo && <p className="hint">{!lastCheck ? "Timer operation is unverified. The workbook owner must install and check the Apps Script trigger." : now - Date.parse(lastCheck) > 45 * 60_000 ? "Scheduler check is overdue. The workbook owner should check the trigger and execution log." : "A successful check is recorded; this does not verify that a timer remains installed."}</p>}
-      {!targetRun && snapshot.config.weeklyAutomationEnabled && <p className="hint">Next Tuesday draft is not prepared yet. Check the scheduler before relying on publication.</p>}
-      {targetRun?.status === "cancelled" && <p className="hint">Next Tuesday is cancelled. Automation will not recreate or publish that run.</p>}
-      {scheduledRun && scheduledBlockers.length > 0 && <p className="notice">{snapshot.config.weeklyAutomationEnabled && Date.parse(nextPublication) <= now ? "Publication blocked" : "Not ready"}: {scheduledBlockers.join("; ")}</p>}
-      </div>
-      <details className="admin-disclosure" suppressHydrationWarning><summary>Weekly settings</summary><div className="disclosure-content">
-      <AutomationSettings key={snapshot.config.version ?? 1} snapshot={snapshot} mutate={mutate} pending={pending} />
-      <p className="hint">Tuesday drafts use club defaults. Manual and Sunday publication automatically mark groups without eligible leaders as not running and cancel their bookings. Routes and attendance are optional. Completed published weeks archive the following Sunday, retaining unknown attendance. No reminders are sent.</p>
-      <p className="hint">{snapshot.demo ? "Demo automation is process-local; no live timer or workbook is used." : "The workbook owner must install the Apps Script timer before unattended scheduling can run."}</p>
-      </div></details>
-      </div></details>
-      <details className="admin-disclosure" suppressHydrationWarning><summary>Create an additional draft manual run</summary><div className="disclosure-content"><form className="inline-form" onSubmit={create}>
+      <details className="admin-disclosure" suppressHydrationWarning><summary>Create draft run</summary><div className="disclosure-content">
+      <p className="hint">Prepare another Tuesday run using club defaults or routes from a previous run. It stays a draft until published.</p><form className="inline-form" onSubmit={create}>
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
       <label>Location for new week<select required value={newWeekLocation} disabled={!locationOptions.length} onChange={e => setNewWeekLocation(e.target.value)}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
       <label>Copy scaffold<select value={copy} onChange={e => setCopy(e.target.value)}><option value="">Configured group defaults</option>{snapshot.weeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt)}</option>)}</select></label>
       <div className="action-feedback"><SavingButton savingLabel="Creating draft..." disabled={pending || !locationOptions.length}>Create draft week</SavingButton>
         {draftMessage && <p className="notice" role="status">{draftMessage}</p>}
       </div>
-    </form>{!locationOptions.length ? <p className="notice">No venues are available. Add a location in the Venue list below before creating a week.</p> : <p className="hint">No runners or volunteer assignments are copied.</p>}</div></details>
-      {run && <><h3 className="subheading">Selected run overrides</h3><div className="actions">
+    </form>{!locationOptions.length ? <p className="notice">No venues are available. Add a location in Club settings before creating a week.</p> : <p className="hint">No runners or volunteer assignments are copied.</p>}</div></details>
+      {run && <><h3 className="subheading">Run actions</h3><p className="hint">Publish the selected draft or archive a completed run.</p><div className="actions">
         <SavingButton savingLabel="Publishing..." disabled={pending || run.status !== "draft"} onClick={() => {
           if (!missingLeaders.length || window.confirm(`Publish this week? ${missingLeaders.map(group => `Group ${group.number}`).join(", ")} will be marked not running because no eligible leader is assigned. Their bookings will be cancelled.`)) {
             void mutate("publishRun", { runId: run.id, runVersion: run.version });
@@ -489,11 +485,11 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </div></>}
     {run && ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="week-location-panel">
       <details className="admin-disclosure" suppressHydrationWarning>
-        <summary>Location and time for this week</summary>
+        <summary>Location and time</summary>
         <div className="disclosure-content">
-          <p className="hint">Changes only the venue for {dateLabel(run.startsAt, snapshot.config.timeZone)}.</p>
+          <p className="hint">Change the venue or start time only for {dateLabel(run.startsAt, snapshot.config.timeZone)}. Club defaults stay unchanged.</p>
           <label>Location for this week<select value={run.location && locationOptions.includes(run.location) ? run.location : locationOptions.includes(snapshot.config.location) ? snapshot.config.location : ""} disabled={pending || !locationOptions.length} onChange={event => void mutate("updateWeekLocation", { runId: run.id, runVersion: run.version, location: event.target.value })}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
-          {!locationOptions.length && <p className="hint">Add a venue in the Venue list below to set this week’s location.</p>}
+          {!locationOptions.length && <p className="hint">Add a venue in Club settings to set this week’s location.</p>}
           <WeekTimeEditor key={`${run.id}:${run.version}`} snapshot={snapshot} run={run} mutate={mutate} pending={pending} now={now} />
         </div>
       </details>
@@ -502,9 +498,14 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </div></details>
     </section>
     {run && <section className="panel" id="volunteers"><h2>Leaders</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
-      <div className="assignment-grid">{groups.map(g => <div className="admin-group-assignment" key={g.id}>
+      <table className="leader-assignments"><caption className="sr-only">Weekly group leaders</caption>
+        <thead><tr><th scope="col">Group</th><th scope="col">Places</th><th scope="col">Leader</th><th scope="col">Status / actions</th></tr></thead>
+        <tbody>{groups.map(g => <tr key={g.id}>
+        <th scope="row">Group {g.number}<small>{g.paceLabel}</small></th>
+        <td data-label="Places">{confirmedCount(g.id, snapshot.bookings)}/{g.capacity}</td>
+        <td data-label="Leader">
         <SearchableSelect
-          label={`Group ${g.number} · ${confirmedCount(g.id, snapshot.bookings)}/${g.capacity} · Leader`}
+          label={`Leader for Group ${g.number}`}
           value={g.leaderId ?? ""} placeholder="None"
           options={[{ value: "", label: "None" }, ...snapshot.members.filter(m => m.active && m.roles.includes("leader")).map(m => ({
             value: m.id,
@@ -514,8 +515,11 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
           disabled={pending || !["draft", "published"].includes(run.status) || Date.parse(run.startsAt) <= now || g.cancelled === true}
           onChange={memberId => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId })}
         />
+        </td>
+        <td data-label="Status / actions">
+        {!g.cancelled && <span className={`badge ${g.leaderId ? "published" : "draft"}`}>{g.leaderId ? "Leader assigned" : "Needs leader"}</span>}
         {g.cancelled ? <div className="admin-group-actions">
-          <span className="hint">Not running · {g.cancellationReason === "no-leader" ? "no leader available" : "insufficient interest"}</span>
+          <span className="badge cancelled">Not running</span><span className="hint">{g.cancellationReason === "no-leader" ? "No leader available" : "Insufficient interest"}</span>
           {["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <SavingButton savingLabel="Restoring group..." type="button" className="secondary" disabled={pending} onClick={() => {
             if (window.confirm(`Restore Group ${g.number}? Cancelled bookings will not be reinstated. Assign a leader again after restoring.`)) {
               setRestoredGroup(undefined);
@@ -523,19 +527,20 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
             }
           }}>Restore group</SavingButton>}
         </div> : ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="admin-group-actions">
-          {!g.leaderId && <SavingButton savingLabel="Cancelling group..." type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
+          {!g.leaderId && <SavingButton savingLabel="Cancelling group..." type="button" className="danger no-leader-action" disabled={pending} onClick={() => {
             if (window.confirm(`Mark Group ${g.number} as not held because no leader is available? Existing bookings will be cancelled.`)) {
               void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "no-leader" });
             }
           }}>Cancel · no leader</SavingButton>}
-          <SavingButton savingLabel="Cancelling group..." type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
+          <SavingButton savingLabel="Cancelling group..." type="button" className="danger no-leader-action" disabled={pending} onClick={() => {
             if (window.confirm(`Cancel Group ${g.number} for insufficient interest? Existing bookings will be cancelled.`)) {
               void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "low-interest" });
             }
           }}>Cancel · low interest</SavingButton>
         </div>}
         {restoredGroup === g.id && !g.cancelled && <p className="notice" role="status">Group {g.number} restored. Assign a leader; cancelled bookings have not been reinstated.</p>}
-      </div>)}</div>
+        </td>
+      </tr>)}</tbody></table>
     </section>}
     {run && <section className="panel"><details className="admin-disclosure runner-moves-disclosure" suppressHydrationWarning>
       <summary>Runner moves & trial runners</summary>
@@ -604,6 +609,28 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <p className="hint">Recorded published/archived-week events only; draft and cancelled weeks are excluded. Promotion rate = promotions ÷ waitlist joins (not confirmed bookings). Peak is the maximum recorded individual-group queue, not an aggregate of all queues or today’s queue; unavailable history is never inferred.</p>
       </div>
     </details></section>
+    </div>
+    <div className="stack admin-tab-panel" id="admin-panel-settings" role="tabpanel" aria-labelledby="admin-tab-settings" hidden={tab !== "settings"} tabIndex={0}>
+    <section className="panel">
+      <h2>Automation and schedule · {snapshot.config.weeklyAutomationEnabled ? "On" : "Off"}</h2>
+      <div className="automation-health" aria-label="Automation health">
+      <h3>Scheduler status</h3>
+      <dl className="scheduler-status">
+        <div><dt>Publication schedule</dt><dd>Sunday {snapshot.config.weeklyPublishTime ?? "18:00"} · {snapshot.config.timeZone}</dd></div>
+        <div><dt>Last successful check</dt><dd>{lastCheck ? localTimestamp(lastCheck) : "Not recorded"}{snapshot.demo && " (demo only)"}</dd></div>
+        <div><dt>{Date.parse(nextPublication) <= now ? "Publication due" : "Next publication"}</dt><dd>{snapshot.config.weeklyAutomationEnabled ? localTimestamp(nextPublication) : "Automatic publication off"}</dd></div>
+      </dl>
+      {!snapshot.demo && <p className="hint">{!lastCheck ? "Timer operation is unverified. The workbook owner must install and check the Apps Script trigger." : now - Date.parse(lastCheck) > 45 * 60_000 ? "Scheduler check is overdue. The workbook owner should check the trigger and execution log." : "A successful check is recorded; this does not verify that a timer remains installed."}</p>}
+      {!targetRun && snapshot.config.weeklyAutomationEnabled && <p className="hint">Next Tuesday draft is not prepared yet. Check the scheduler before relying on publication.</p>}
+      {targetRun?.status === "cancelled" && <p className="hint">Next Tuesday is cancelled. Automation will not recreate or publish that run.</p>}
+      {scheduledRun && scheduledBlockers.length > 0 && <p className="notice">{snapshot.config.weeklyAutomationEnabled && Date.parse(nextPublication) <= now ? "Publication blocked" : "Not ready"}: {scheduledBlockers.join("; ")}</p>}
+      </div>
+      <details className="admin-disclosure" suppressHydrationWarning><summary>Weekly settings</summary><div className="disclosure-content">
+      <AutomationSettings key={snapshot.config.version ?? 1} snapshot={snapshot} mutate={mutate} pending={pending} />
+      <p className="hint">Tuesday drafts use club defaults. Manual and Sunday publication automatically mark groups without eligible leaders as not running and cancel their bookings. Routes and attendance are optional. Completed published weeks archive the following Sunday, retaining unknown attendance. No reminders are sent.</p>
+      <p className="hint">{snapshot.demo ? "Demo automation is process-local; no live timer or workbook is used." : "The workbook owner must install the Apps Script timer before unattended scheduling can run."}</p>
+      </div></details>
+    </section>
     <section className="panel member-onboarding-panel">
       <MemberOnboarding snapshot={snapshot} mutate={mutate} pending={pending} />
     </section>
@@ -648,12 +675,13 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         </div>
       </form>
       <ul className="venue-list" aria-label="Saved venues">{locationOptions.map(location => <li key={location}>
-        <span>{location}</span><SavingButton savingLabel="Removing..." type="button" className="secondary" disabled={pending || locationOptions.length < 2} onClick={() => removeLocation(location)}>Remove</SavingButton>
+        <span>{location}</span><SavingButton savingLabel="Removing..." type="button" className="danger" disabled={pending || locationOptions.length < 2} onClick={() => removeLocation(location)}>Remove</SavingButton>
       </li>)}</ul>
       {removedLocation && <p className="notice" role="status">Location &quot;{removedLocation}&quot; removed.</p>}
       </div>
     </details>
     </section>
+    </div>
   </div>;
 }
 

@@ -22,6 +22,16 @@ The admin workspace uses compact branding and headings, with a solid teal active
 
 Sign-in shows an animated runner while Clerk loads, while its primary form action is processing and while the signed-in page loads. Reduced-motion preferences show a still runner; loading messages remain available to screen readers.
 
+Admin opens on **Weekly tasks** for run selection, setup, leader import/assignments, runner moves and demand reporting. **Club settings** contains automation and schedule (including Weekly settings), member onboarding/search and venues. Tabs support arrow keys and Home/End; switching tabs preserves unsaved form entries.
+
+Admin and Club Runs show the run date as text when there is only one selectable week; the run-week dropdown appears only for multiple choices. Past-run browsing stays in the separate Club Runs history section and never adds historical weeks to the main dropdown.
+
+Weekly leader assignments use a compact Group / Places / Leader / Status-actions table, stacking each group on small screens. Cancelled groups have a **Not running** badge and retain the future-run **Restore group** action.
+
+Advanced Controls uses short labels (**Create draft run**, **Run actions**, **Location and time**) with descriptions clarifying draft publication and selected-run-only changes.
+
+Admin Cancel and Remove actions share muted red text/outlines and a stronger red hover state. Ordinary edits and Restore remain neutral; existing cancellation/removal confirmations are unchanged.
+
 In Admin > Volunteers, cancelled groups within future draft or published runs have a **Restore group** button. Restoration is administrator-only, clears volunteer assignments and leaves cancelled bookings cancelled. Assign a leader again afterwards. Entire cancelled or archived runs and past groups cannot be restored. Deploy the updated `apps-script/Code.gs` as a new Apps Script deployment version before using this action on the live workbook.
 
 ## Owner confirmation required before publication

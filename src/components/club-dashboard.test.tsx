@@ -38,6 +38,37 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it.each(["admin", "runs"] as const)("shows a date instead of a dropdown for one %s week", view => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [{ ...snapshot.weeks[0], status: "published" }];
+    const renderPage = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view }));
+    expect(renderPage()).not.toContain('id="week"');
+    expect(renderPage()).toContain("<strong>Tue 6 Oct 2026</strong>");
+    snapshot.weeks.push({ ...snapshot.weeks[0], id: "second-week", startsAt: "2026-10-13T18:00:00Z", status: "draft" });
+    expect(renderPage()).toContain('id="week"');
+  });
+  it("separates weekly tasks from club settings in accessible Admin tabs", () => {
+    const snapshot = createDemoSnapshot(new Date(startsAt));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "admin" }));
+    expect(html).toContain('role="tablist" aria-label="Admin areas"');
+    expect(html).toContain('id="admin-tab-weekly" aria-selected="true"');
+    expect(html).toContain('id="admin-tab-settings" aria-selected="false"');
+    const weekly = html.split('id="admin-panel-weekly"')[1].split('id="admin-panel-settings"')[0];
+    const settings = html.split('id="admin-panel-settings"')[1];
+    expect(weekly).toContain('aria-labelledby="admin-tab-weekly" tabindex="0"');
+    expect(weekly).toContain("Leaders</h2>");
+    expect(weekly).toContain("Runner moves &amp; trial runners");
+    expect(weekly).not.toContain("Automation and schedule");
+    expect(weekly).not.toContain("Add member</summary>");
+    expect(settings).toContain('aria-labelledby="admin-tab-settings" hidden=""');
+    expect(settings).toContain("Automation and schedule");
+    expect(settings).toContain("Add member</summary>");
+    expect(settings).toContain("Club members</summary>");
+    expect(settings).toContain("Default location");
+  });
   it.each([
     ["runs", "/"], ["detail", "/"], ["profile", "/profile"], ["leader", "/leader"], ["admin", "/admin"],
   ] as const)("marks only the current %s navigation tab", (view, href) => {
@@ -119,8 +150,12 @@ describe("leader attendance clock", () => {
     snapshot.groups = snapshot.groups.filter(group => group.runId === snapshot.weeks[0].id);
     snapshot.groups.forEach(group => { group.cancelled = false; });
     const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    expect(renderAdmin()).toContain('<table class="leader-assignments">');
+    expect(renderAdmin()).toContain('<th scope="col">Places</th>');
+    expect(renderAdmin()).toContain('aria-label="Leader for Group');
     expect(renderAdmin()).not.toContain(">Restore group</button>");
     snapshot.groups[0].cancelled = true;
+    expect(renderAdmin()).toContain('<span class="badge cancelled">Not running</span>');
     expect(renderAdmin().match(/>Restore group<\/button>/g)).toHaveLength(1);
     snapshot.weeks[0].status = "draft";
     expect(renderAdmin()).toContain(">Restore group</button>");
@@ -267,8 +302,9 @@ describe("leader attendance clock", () => {
     const advancedStart = html.indexOf('<details class="admin-disclosure advanced-controls"');
     const volunteersStart = html.indexOf('<section class="panel" id="volunteers">');
     const advancedHtml = html.slice(advancedStart, volunteersStart);
-    expect(advancedHtml).toContain("<summary>Automation and schedule");
-    expect(advancedHtml).toContain("<summary>Create an additional draft manual run</summary>");
+    expect(advancedHtml).not.toContain("Automation and schedule");
+    expect(advancedHtml).toContain("<summary>Create draft run</summary>");
+    expect(advancedHtml).toContain("It stays a draft until published.");
     expect(advancedHtml.match(/<details/g)).toHaveLength(advancedHtml.match(/<\/details>/g)?.length ?? 0);
     expect(html.indexOf("<summary>Runner moves &amp; trial runners</summary>")).toBeGreaterThan(volunteersStart);
     expect(html.indexOf("<summary>Group popularity</summary>")).toBeGreaterThan(volunteersStart);
@@ -276,7 +312,7 @@ describe("leader attendance clock", () => {
     expect(html).toContain('aria-label="Run readiness"');
     expect(html).toContain("<dt>Last successful check</dt>");
     expect(html).toContain("Automation and schedule");
-    expect(html).toContain("Selected run overrides");
+    expect(html).toContain("Run actions");
     expect(html).toContain("Not recorded");
     expect(html).toContain("Timer operation is unverified");
     expect(html).toContain('aria-pressed="true"');
