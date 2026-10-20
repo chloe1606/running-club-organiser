@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import type { Group, Run } from "../lib/domain";
 import { bookingIsOpen, confirmedCount } from "../lib/domain";
@@ -18,7 +17,7 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending, now }: {
   const canVolunteerAsSweeper = Boolean(currentMember?.active && currentMember.roles.includes("runner") && currentMember.roles.includes("sweeper"));
   const [sweeperOptIns, setSweeperOptIns] = useState<Record<string, boolean>>({});
   return <section className="groups">
-    <div className="section-title"><div><p className="eyebrow">Find your people</p><h2>Choose your pace group</h2></div><p>{groups.length} groups · {own ? "You have a booking this week" : "One group per runner"}</p></div>
+    <div className="section-title"><div><p className="eyebrow">{snapshot.currentMemberId ? "Find your people" : "Tuesday club runs"}</p><h2>{snapshot.currentMemberId ? "Choose your pace group" : "View this week’s pace groups"}</h2></div><p>{groups.length} groups{snapshot.currentMemberId ? ` · ${own ? "You have a booking this week" : "One group per runner"}` : " · Club run information"}</p></div>
     {own && <p className="notice own-booking"><strong>Your booking: Group {snapshot.groups.find(g => g.id === own.groupId)?.number}</strong> · {own.status === "waitlisted" ? `waitlist position #${queuePosition(snapshot, own.groupId, own.memberId)} (not confirmed)` : "confirmed"}{own.status === "waitlisted" && ". A queue place is not a confirmed booking."}{own.source === "assignment" && " · assigned volunteer; ask an administrator to change this assignment."} <a href={`#booking-${own.groupId}`}>View your group</a></p>}
     {!open && <p className="notice">Booking is closed for this week. You can still view group information.</p>}
     <div className="grid">{groups.map(group => {
@@ -46,7 +45,7 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending, now }: {
         <div className="volunteers"><p>Leader · <strong>{leader ?? (group.leaderId ? "Assigned club leader" : "To be assigned")}</strong></p><p>Sweeper · {sweeper ?? (group.sweeperId ? "Assigned club member" : "Not assigned")}</p><p className="route-summary">Route · {group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "TBC"}</p></div>
         {snapshot.currentMemberId && canVolunteerAsSweeper && !mine && !groupCancelled && <label className="check sweeper-opt-in"><input type="checkbox" checked={sweeperOptIn} disabled={pending || !open || spaces === 0} onChange={event => setSweeperOptIns(value => ({ ...value, [group.id]: event.target.checked }))} />I can be this group’s sweeper</label>}
         {snapshot.currentMemberId && canVolunteerAsSweeper && sweeperOptIn && spaces === 0 && !mine && <p className="hint">Sweeper volunteers need a confirmed place; this group is full.</p>}
-        {snapshot.currentMemberId ? <details className="runner-roster">
+        {snapshot.currentMemberId && <details className="runner-roster">
           <summary className="details-link">Runners &amp; Waitlist</summary>
           <div className="runner-roster-panel" aria-label={`Runners and waitlist for ${group.name ?? `Group ${group.number}`}`}>
             <section><h4>Runners · {confirmedRunners.length}</h4>
@@ -56,14 +55,14 @@ export function BookingGroups({ snapshot, run, groups, mutate, pending, now }: {
               {waitingRunners.length ? <ol>{waitingRunners.map(booking => <li key={booking.id}>{runnerName(booking)}{booking.source === "trial" ? " · trial" : ""}</li>)}</ol> : <p>No one waiting.</p>}
             </section>
           </div>
-        </details> : <Link className="details-link" href="/auth/signin">Sign in to view Runners &amp; Waitlist</Link>}
+        </details>}
         {groupCancelled ? <p className="group-cancelled-message">This group is not running this week.</p> : snapshot.currentMemberId ? <button disabled={pending || !open || own?.source === "assignment"} className={mine ? "secondary" : ""} onClick={() => {
           if (own && !mine && !spaces && !window.confirm("This group is full. Switching will release your current booking or queue place and join the destination waitlist. You will not have a confirmed place. Continue?")) return;
           void mutate(mine ? "leave" : own ? "switchGroup" : "book", mine
             ? { runId: run.id, runVersion: run.version }
             : { runId: run.id, runVersion: run.version, groupId: group.id, groupVersion: group.version,
               ...(canVolunteerAsSweeper ? { sweeper: sweeperOptIn } : {}) });
-        }}>{pending ? "Saving…" : mine ? "Leave this group" : own ? (spaces ? "Switch to this group" : "Switch to waitlist") : spaces ? "Join this group" : "Join waitlist"}</button> : <Link className="button" href="/auth/signin">Sign in to book</Link>}
+        }}>{pending ? "Saving…" : mine ? "Leave this group" : own ? (spaces ? "Switch to this group" : "Switch to waitlist") : spaces ? "Join this group" : "Join waitlist"}</button> : null}
       </article>;
     })}</div>
   </section>;
