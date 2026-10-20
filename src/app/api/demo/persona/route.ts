@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { demoEnabled } from "@/lib/platform";
+import { demoPersonas } from "@/lib/demo-data";
 import { sameOrigin } from "@/lib/api";
 
 export async function POST(request: Request) {
@@ -9,7 +10,7 @@ export async function POST(request: Request) {
   if (text.length > 1000) return NextResponse.json({ message: "Request is too large." }, { status: 413 });
   let body;
   try { body = JSON.parse(text); } catch { body = null; }
-  if (!body || !["runner", "leader", "admin"].includes(body.persona)) return NextResponse.json({ message: "Choose a demo persona." }, { status: 400 });
+  if (!body || ![...Object.keys(demoPersonas), "signed-out"].includes(body.persona)) return NextResponse.json({ message: "Choose a demo persona." }, { status: 400 });
   const response = NextResponse.json({ ok: true });
   response.cookies.set("demo-persona", body.persona, { httpOnly: true, sameSite: "strict", secure: process.env.NODE_ENV === "production", path: "/" });
   return response;

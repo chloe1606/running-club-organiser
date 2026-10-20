@@ -8,4 +8,10 @@ it("does not log or forward token-bearing authentication URLs", async () => {
     .toContainEqual({ key: "Referrer-Policy", value: "no-referrer" });
   expect(headers?.find((entry) => entry.source === "/api/auth/:path*")?.headers)
     .toContainEqual({ key: "Cache-Control", value: "no-store" });
+  for (const source of ["/sign-in/:path*", "/sign-up/:path*"]) {
+    expect(headers?.find(entry => entry.source === source)?.headers)
+      .toContainEqual({ key: "Referrer-Policy", value: "no-referrer" });
+    expect(headers?.find(entry => entry.source === source)?.headers)
+      .toContainEqual({ key: "Cache-Control", value: "no-store" });
+  }
 });

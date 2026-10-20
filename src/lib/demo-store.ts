@@ -21,6 +21,7 @@ function enabled() {
   return store;
 }
 function memberFor(persona = "runner") {
+  if (persona === "signed-out") return undefined;
   if (!Object.hasOwn(demoPersonas, persona)) throw new GatewayError("Unknown demo persona.", 400, "INVALID_PERSONA");
   return demoPersonas[persona as keyof typeof demoPersonas];
 }
@@ -92,7 +93,9 @@ export function runDemoWeeklyAutomation(now = new Date()): void {
 function applyMutation(operation: string, payload: Record<string, unknown>, persona?: string): PlatformSnapshot {
   const original = enabled();
   const actorId = memberFor(persona);
-  const actor = original.members.find(m => m.id === actorId)!;
+  if (!actorId) throw new GatewayError("Sign in to make changes.", 401, "UNAUTHORIZED");
+  const actor = original.members.find(m => m.id === actorId);
+  if (!actor) throw new GatewayError("Active membership required.", 403, "FORBIDDEN");
   if (!actor.active) throw new GatewayError("Active membership required.", 403, "FORBIDDEN");
   const requestId = String(payload.requestId ?? "");
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) throw new Error("A UUID request ID is required.");

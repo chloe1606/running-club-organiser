@@ -12,7 +12,7 @@ export function errorResponse(error: unknown) {
 
 export function sameOrigin(request: Request) {
   try {
-    const expected = new URL(process.env.NEXTAUTH_URL ?? request.url);
+    const expected = new URL(process.env.APP_URL ?? request.url);
     if (!["https:", "http:"].includes(expected.protocol) || expected.username || expected.password) return false;
     return request.headers.get("origin") === expected.origin &&
       request.headers.get("sec-fetch-site") !== "cross-site";

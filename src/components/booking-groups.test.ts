@@ -48,7 +48,7 @@ describe("runner group UI", () => {
     expect(card).toContain("Runners &amp; Waitlist");
     expect(card).toContain("Runners · 19");
     expect(card).toContain("Waitlist · 4");
-    expect(card).toContain("Jamie Brooks");
+    expect(card).toContain("Aisha Ahmed");
     expect(card).not.toContain("Route, runners &amp; waitlist");
   });
   it("shows trial names in the signed-in roster preview", () => {
@@ -86,18 +86,26 @@ describe("runner group UI", () => {
     expect(render(snapshot)).toContain("I can be this group’s sweeper");
     expect(render(fixture().snapshot)).not.toContain("I can be this group’s sweeper");
   });
-  it("limits public cards to summaries with sign-in links, never a roster or email", () => {
+  it("shows public visitors read-only group summaries without roster hovers or booking actions", () => {
     const { snapshot } = fixture();
     snapshot.currentMemberId = undefined;
     snapshot.members = [];
     const html = render(snapshot);
-    expect(html).toContain('href="/auth/signin"');
-    expect(html).toContain("Sign in to book");
-    expect(html).toContain("Sign in to view Runners &amp; Waitlist");
+    expect(html).toContain("View this week’s pace groups");
+    expect(html).toContain("Club run information");
     expect(html).not.toContain("runner-roster-panel");
+    expect(html).not.toContain("runner-roster");
+    expect(html).not.toContain("Runners &amp; Waitlist");
+    expect(html).not.toContain("Route ·");
+    expect(html).not.toContain("route-summary");
+    expect(html).not.toContain("Sign in to book");
+    expect(html).not.toContain("Sign in to view");
     expect(html).not.toContain("Route, runners &amp; waitlist");
     expect(html).not.toContain("@example.test");
     expect(html).not.toContain("<button");
+    const cards = html.split("<article").slice(1);
+    expect(cards).toHaveLength(13);
+    expect(cards.every(card => !card.includes("<a "))).toBe(true);
   });
   it("clearly closes historical weeks and disables all booking actions", () => {
     const { snapshot } = fixture();
