@@ -256,22 +256,53 @@ describe("weekly automation", () => {
     expect(app.state().weeks[0].status).toBe("published");
   });
 
-  it("keeps blocked drafts and respects single future publication until a later tick", () => {
+  it("publishes with unled groups marked not running while respecting single future publication", () => {
     const snapshot = ready();
     snapshot.groups[1].cancelled = false;
     const app = harness(snapshot, "2026-08-02T17:00:00Z");
     runInContext("runWeeklyAutomation()", app.context);
-    expect(app.state().weeks[0].status).toBe("draft");
-    expect(app.mutate({ operation: "cancelGroup", email: "admin@example.org", runId: snapshot.weeks[0].id,
-      groupId: "g2", reason: "no-leader" }).ok).toBe(true);
-    runInContext("runWeeklyAutomation()", app.context);
     expect(app.state().weeks[0].status).toBe("published");
+    expect(app.state().groups[1]).toMatchObject({ cancelled: true, cancellationReason: "no-leader", version: 2 });
     const conflict = ready();
     conflict.weeks.push({ ...conflict.weeks[0], id: "other", status: "published", startsAt: "2026-08-11T18:00:00Z" });
     conflict.groups.push({ ...conflict.groups[0], id: "other-group", runId: "other" });
     const competing = harness(conflict, "2026-08-02T17:00:00Z");
     runInContext("runWeeklyAutomation()", competing.context);
     expect(competing.state().weeks[0].status).toBe("draft");
+    expect(competing.state().groups).toEqual(conflict.groups);
+  });
+
+  it("manual publication atomically cancels unled groups and bookings, preserves led/cancelled groups and replays safely", () => {
+    const initial = ready();
+    initial.bookings = [{ ...booking("unled-confirmed", "one", "g2"), runId: initial.weeks[0].id },
+      { ...booking("unled-waiting", "two", "g2", "waitlisted"), runId: initial.weeks[0].id }];
+    initial.groups[1].cancelled = false;
+    const app = harness(initial);
+    const request = { operation: "publishRun", email: "admin@example.org", requestId: requestId(90),
+      runId: initial.weeks[0].id, runVersion: 1 };
+    expect(app.post(request).ok).toBe(true);
+    const state = app.state();
+    expect(state.weeks[0]).toMatchObject({ status: "published", version: 2 });
+    expect(state.groups[0]).toEqual(initial.groups[0]);
+    expect(state.groups[1]).toMatchObject({ cancelled: true, cancellationReason: "no-leader", version: 2 });
+    expect(state.groups[1].sweeperId).toBeUndefined();
+    expect(state.groups[2]).toEqual(initial.groups[2]);
+    expect(state.bookings.every(entry => entry.status === "cancelled" && entry.version === 2)).toBe(true);
+    expect(state.audit.some(entry => entry.action === "cancelGroup" && entry.groupId === "g2")).toBe(true);
+    expect(app.post(request).ok).toBe(true);
+    expect(app.state()).toEqual(state);
+  });
+
+  it("publication supports all-unled weeks by marking every group not running", () => {
+    const initial = ready();
+    delete initial.groups[0].leaderId;
+    initial.groups[1].cancelled = false;
+    const app = harness(initial, "2026-08-02T17:00:00Z");
+    runInContext("runWeeklyAutomation()", app.context);
+    const state = app.state();
+    expect(state.weeks[0].status).toBe("published");
+    expect(state.groups.every(group => group.cancelled)).toBe(true);
+    expect(state.groups.slice(0, 2).every(group => !group.leaderId && group.cancellationReason === "no-leader")).toBe(true);
   });
 
   it("requires admin settings, checks versions, prepares immediately, and replays atomically", () => {
@@ -1345,8 +1376,9 @@ describe("Apps Script manual migration", () => {
     expect(app.mutate({ operation: "publishRun", email: "admin@example.org", requestId: requestId(2), runId: "run-2026-08-11" }).ok).toBe(true);
     expect(app.mutate({
       operation: "book", email: "runner@example.org", requestId: requestId(3), runId: "run-2026-08-11",
-      groupId: "run-2026-08-11-definition-group-1", runVersion: 2, groupVersion: 1,
-    })).toMatchObject({ ok: true, data: { status: "confirmed" } });
+      groupId: "run-2026-08-11-definition-group-1", runVersion: 2, groupVersion: 2,
+    })).toMatchObject({ ok: false, code: "GROUP_CANCELLED" });
+    expect(app.state().groups.every(group => group.cancelled && group.cancellationReason === "no-leader")).toBe(true);
     expect(app.state().groups.every((group) => group.capacity === 19)).toBe(true);
   });
   it("does not permit setup import to drop or reassign existing user identities", () => {

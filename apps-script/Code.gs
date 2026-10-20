@@ -67,12 +67,6 @@ function dispatch_(request) {
   return response_(true, null, null, Object.assign({}, result, { projectionPending: !projected }));
 }
 
-function publicationBlockers_(snapshot, run) {
-  return snapshot.groups.filter((group) => group.runId === run.id && !group.cancelled)
-    .filter((group) => !snapshot.members.some((member) => member.id === group.leaderId && member.active && member.roles.includes("leader")))
-    .map((group) => "Group " + group.number + " needs an eligible leader");
-}
-
 function weeklyAutomation_(snapshot, groupDefinitions, now, actor) {
   if (!snapshot.config.weeklyAutomationEnabled) return;
   const localDate = clubLocalDate_(now, snapshot.config.timeZone);
@@ -103,7 +97,7 @@ function weeklyAutomation_(snapshot, groupDefinitions, now, actor) {
   snapshot.weeks.filter((week) => week.status === "published" && clubLocalDate_(new Date(week.startsAt), snapshot.config.timeZone) < archiveDate)
     .forEach((week) => mutate({ operation: "archiveRun", runId: week.id, runVersion: week.version }));
   if (!due) return;
-  if (run.status === "draft" && new Date(run.bookingClosesAt) > now && !publicationBlockers_(snapshot, run).length &&
+  if (run.status === "draft" && new Date(run.bookingClosesAt) > now &&
       !snapshot.weeks.some((week) => week.id !== run.id && week.status === "published" && new Date(week.startsAt) > now)) {
     mutate({ operation: "publishRun", runId: run.id, runVersion: run.version });
   }
@@ -340,6 +334,19 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       case "publishRun":
         if (run.status !== "draft" || new Date(run.startsAt) <= now || new Date(run.bookingClosesAt) <= now) fail_("INVALID_PUBLISH", "Only future draft runs with an open booking window can be published.");
         if (snapshot.weeks.some((entry) => entry.id !== run.id && entry.status === "published" && new Date(entry.startsAt) > now)) fail_("PUBLISHED_RUN_EXISTS", "Another future run is already published.");
+        snapshot.groups.filter((entry) => entry.runId === run.id && !entry.cancelled &&
+          !snapshot.members.some((member) => member.id === entry.leaderId && member.active && member.roles.includes("leader")))
+          .forEach((entry) => {
+            entry.cancelled = true;
+            entry.cancellationReason = "no-leader";
+            delete entry.leaderId;
+            delete entry.sweeperId;
+            touched.add(entry.id);
+            snapshot.bookings.filter((booking) => booking.groupId === entry.id && booking.runId === run.id && booking.status !== "cancelled")
+              .forEach((booking) => cancelBooking_(snapshot, booking, auditContext));
+            snapshot.audit.push({ id: Utilities.getUuid(), runId: run.id, groupId: entry.id, actorId: actor.id,
+              action: "cancelGroup", at: now.toISOString(), requestId: request.requestId });
+          });
         run.status = "published";
         result = { status: run.status };
         break;

@@ -80,9 +80,7 @@ export function sundayPublicationAt(run: Pick<Run, "startsAt">, config: ClubConf
 }
 
 export function publicationBlockers(snapshot: PlatformSnapshot, run: Run, now: Date): string[] {
-  const blockers = snapshot.groups.filter(group => group.runId === run.id && !group.cancelled)
-    .filter(group => !snapshot.members.some(member => member.id === group.leaderId && member.active && member.roles.includes("leader")))
-    .map(group => `Group ${group.number} needs an eligible leader`);
+  const blockers: string[] = [];
   if (snapshot.weeks.some(week => week.id !== run.id && week.status === "published" && Date.parse(week.startsAt) > now.getTime())) {
     blockers.push("Another future week is published");
   }

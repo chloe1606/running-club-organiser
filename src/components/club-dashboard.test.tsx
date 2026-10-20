@@ -62,8 +62,10 @@ describe("leader attendance clock", () => {
     group.leaderId = undefined;
     const readiness = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }))
       .split('aria-label="Run readiness">')[1].split("</ul>")[0];
-    expect(readiness()).toContain("Draft — needs attention");
+    expect(readiness()).toContain("Draft — ready to publish; groups without eligible leaders will be marked not running.");
     expect(readiness()).toContain('href="#volunteers"');
+    expect(readiness()).toContain('href="#run-controls"');
+    expect(readiness()).toContain("bookings will be cancelled on publication");
     group.leaderId = snapshot.members.find(member => member.active && member.roles.includes("leader"))!.id;
     expect(readiness()).toContain("Draft — ready to publish");
     expect(readiness()).toContain('href="#run-controls"');
@@ -299,7 +301,7 @@ describe("leader attendance clock", () => {
     expect(html).toContain("Booking fill</span><strong>Not available</strong>");
     expect(html).not.toContain("Average recorded attendees");
   });
-  it("shows blocked automation and time controls with stable Admin clock rendering", () => {
+  it("shows publication warnings and time controls with stable Admin clock rendering", () => {
     const snapshot = createDemoSnapshot(new Date("2026-10-06T12:00:00Z"));
     snapshot.currentMemberId = snapshot.members.find(member => member.roles.includes("admin"))!.id;
     snapshot.config.weeklyAutomationEnabled = true;
@@ -310,8 +312,8 @@ describe("leader attendance clock", () => {
     const adminHtml = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
     vi.setSystemTime(new Date("2026-10-01T12:00:00Z"));
     const html = adminHtml();
-    expect(html).toContain("Publication blocked");
-    expect(html).toContain("needs an eligible leader");
+    expect(html).toContain("groups without eligible leaders will be marked not running");
+    expect(html).not.toContain("Publication blocked");
     expect(html).toContain("Start time for this week");
     expect(html).toContain("Sunday publication time");
     vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));

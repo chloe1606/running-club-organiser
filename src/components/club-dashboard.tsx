@@ -419,17 +419,17 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       {run && <div className="selected-run-summary">
         <p><strong>{run.location ?? snapshot.config.location}</strong> · {new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.startsAt))} · <span className={`badge ${run.status}`}>{run.status}</span></p>
         <ul className="readiness-checklist" aria-label="Run readiness">
-          <li><strong>Publication:</strong> {run.status === "draft" ? blockers.length ? "Draft — needs attention before publication." : "Draft — ready to publish." :
+          <li><strong>Publication:</strong> {run.status === "draft" ? blockers.length ? "Draft — needs attention before publication." : missingLeaders.length ? "Draft — ready to publish; groups without eligible leaders will be marked not running." : "Draft — ready to publish." :
             run.status === "published" ? "Published — visible to members." : run.status === "cancelled" ? "Cancelled — this run will not take place." : "Archived — read-only history."}</li>
           <li><strong>Leader coverage:</strong> {runningGroups.length - missingLeaders.length}/{runningGroups.length} running groups.
-            {missingLeaders.length > 0 ? <> Missing leaders: {missingLeaders.map(group => `Group ${group.number}`).join(", ")}. {futureRun && <a href="#volunteers">Assign leaders</a>}</> :
+            {missingLeaders.length > 0 ? <> Missing leaders: {missingLeaders.map(group => `Group ${group.number}`).join(", ")}. {run.status === "draft" && "These groups and their bookings will be cancelled on publication. "}{futureRun && <a href="#volunteers">Assign leaders</a>}</> :
               runningGroups.length ? " All running groups have an eligible leader." : " No groups are running."}</li>
           <li><strong>Next action:</strong> {!futureRun ? "No changes needed for this closed or past run." :
-            missingLeaders.length ? <a href="#volunteers">Assign missing leaders or cancel groups that will not run.</a> :
             run.status === "draft" && blockers.length ? <>{blockers.join(". ")}. <a href="#run-controls" onClick={openRunControls}>Review run controls</a></> :
             run.status === "draft" ? <><a href="#run-controls" onClick={openRunControls}>Publish this run</a>{snapshot.config.weeklyAutomationEnabled &&
               (Date.parse(sundayPublicationAt(run, snapshot.config)) <= now ? ". Scheduled publication is overdue; review automation." :
                 ` or await scheduled publication on ${localTimestamp(sundayPublicationAt(run, snapshot.config))}.`)}</> :
+            missingLeaders.length ? <a href="#volunteers">Assign missing leaders or cancel groups that will not run.</a> :
             bookingIsOpen(run, new Date(now)) ? "Ready for runners — bookings are open." : Date.parse(run.bookingOpensAt) > now ? "Wait for bookings to open." : "Bookings are closed; prepare for the run."}</li>
         </ul>
       </div>}
@@ -437,7 +437,9 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
         const blockers = publicationBlockers(snapshot, week, new Date(now));
         const due = Date.parse(sundayPublicationAt(week, snapshot.config)) <= now;
-        return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}</span></li>;
+        const unled = snapshot.groups.filter(group => group.runId === week.id && !group.cancelled &&
+          !snapshot.members.some(member => member.id === group.leaderId && member.active && member.roles.includes("leader"))).length;
+        return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}{unled > 0 && ` · ${unled} groups without eligible leaders will be marked not running on publication.`}</span></li>;
       })}</ul></>}
       <details className="admin-disclosure advanced-controls" id="run-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
       <WeeklyLeaderImport snapshot={snapshot} mutate={mutate} pending={pending} />
@@ -456,7 +458,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </div>
       <details className="admin-disclosure" suppressHydrationWarning><summary>Weekly settings</summary><div className="disclosure-content">
       <AutomationSettings key={snapshot.config.version ?? 1} snapshot={snapshot} mutate={mutate} pending={pending} />
-      <p className="hint">Tuesday drafts use club defaults. Sunday publication requires an eligible leader for every running group; routes and attendance are optional. Completed published weeks archive the following Sunday, retaining unknown attendance. No reminders are sent.</p>
+      <p className="hint">Tuesday drafts use club defaults. Manual and Sunday publication automatically mark groups without eligible leaders as not running and cancel their bookings. Routes and attendance are optional. Completed published weeks archive the following Sunday, retaining unknown attendance. No reminders are sent.</p>
       <p className="hint">{snapshot.demo ? "Demo automation is process-local; no live timer or workbook is used." : "The workbook owner must install the Apps Script timer before unattended scheduling can run."}</p>
       </div></details>
       </div></details>
@@ -469,7 +471,11 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       </div>
     </form>{!locationOptions.length ? <p className="notice">No venues are available. Add a location in the Venue list below before creating a week.</p> : <p className="hint">No runners or volunteer assignments are copied.</p>}</div></details>
       {run && <><h3 className="subheading">Selected run overrides</h3><div className="actions">
-        <SavingButton savingLabel="Publishing..." disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</SavingButton>
+        <SavingButton savingLabel="Publishing..." disabled={pending || run.status !== "draft"} onClick={() => {
+          if (!missingLeaders.length || window.confirm(`Publish this week? ${missingLeaders.map(group => `Group ${group.number}`).join(", ")} will be marked not running because no eligible leader is assigned. Their bookings will be cancelled.`)) {
+            void mutate("publishRun", { runId: run.id, runVersion: run.version });
+          }
+        }}>Publish selected week</SavingButton>
         <SavingButton savingLabel="Archiving..." className="secondary" disabled={pending || run.status !== "published" || Date.parse(run.startsAt) > now} onClick={() => void mutate("archiveRun", { runId: run.id, runVersion: run.version })}>Archive completed week</SavingButton>
       </div></>}
     {run && ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="week-location-panel">
