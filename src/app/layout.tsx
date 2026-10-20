@@ -15,7 +15,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         {process.env.CLUB_DEMO_MODE === "true" ? content :
-          <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up">{content}</ClerkProvider>}
+          <ClerkProvider proxyUrl="/__clerk" signInUrl="/sign-in" signUpUrl="/sign-up">{content}</ClerkProvider>}
       </body>
     </html>
   );
