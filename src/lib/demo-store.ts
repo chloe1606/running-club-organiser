@@ -137,7 +137,7 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     requireRun();
     if (!group || group.runId !== run!.id) throw new Error("Group not found in this run.");
     if (payload.groupVersion !== group.version) throw new GatewayError("This group changed. Refresh and try again.", 409, "STALE_VERSION");
-    if (group.cancelled && operation !== "cancelGroup") throw new Error("This group is not running.");
+    if (group.cancelled && !["cancelGroup", "restoreGroup"].includes(operation)) throw new Error("This group is not running.");
     return group;
   };
   const requireLeader = () => {
@@ -192,6 +192,18 @@ function applyMutation(operation: string, payload: Record<string, unknown>, pers
     case "updateWeekTime": {
       requireAdmin(); requireRun();
       Object.assign(run!, updateRunTime(run!, String(payload.startTime ?? ""), next.config, now));
+      run!.version++;
+      break;
+    }
+    case "restoreGroup": {
+      requireAdmin(); requireGroup();
+      if (!["draft", "published"].includes(run!.status) || new Date(run!.startsAt) <= now) throw new Error("Only a future draft or published group can be restored.");
+      if (!group!.cancelled) throw new Error("This group is not cancelled.");
+      delete group!.cancelled;
+      delete group!.cancellationReason;
+      delete group!.leaderId;
+      delete group!.sweeperId;
+      group!.version++;
       run!.version++;
       break;
     }

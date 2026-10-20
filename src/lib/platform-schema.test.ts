@@ -95,6 +95,12 @@ describe("snapshot integrity", () => {
     expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "no-leader" }).success).toBe(true);
     expect(mutationSchema.safeParse({ operation: "cancelGroup", ...base, reason: "weather" }).success).toBe(false);
   });
+  it("requires run and group versions for group restoration and strips browser actors", () => {
+    const request = { operation: "restoreGroup", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d", runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 };
+    expect(mutationSchema.parse({ ...request, email: "forged@example.org", roles: ["admin"] })).toEqual(request);
+    expect(mutationSchema.safeParse({ ...request, runVersion: undefined }).success).toBe(false);
+    expect(mutationSchema.safeParse({ ...request, groupVersion: undefined }).success).toBe(false);
+  });
   it("accepts None when clearing a leader assignment", () => {
     expect(mutationSchema.safeParse({
       operation: "assignLeader", requestId: "013eb46c-22e2-45db-9c1d-f3bc86a7988d",

@@ -26,6 +26,26 @@ async function setup() {
 }
 
 describe("isolated explicit demo", () => {
+  it("restores cancelled groups only as admin without restoring bookings and supports safe replay", async () => {
+    const { mutateDemo, getDemoSnapshot, payload, group } = await setup();
+    const cancelled = mutateDemo("cancelGroup", { ...payload(), reason: "low-interest" }, "admin");
+    const request = payload();
+    expect(() => mutateDemo("restoreGroup", request, "runner")).toThrow("Administrator");
+    expect(() => mutateDemo("restoreGroup", request, "leader")).toThrow("Administrator");
+    expect(() => mutateDemo("restoreGroup", { ...request, groupVersion: 0 }, "admin")).toThrow("changed");
+    const restored = mutateDemo("restoreGroup", request, "admin");
+    const result = restored.groups.find(candidate => candidate.id === group.id)!;
+    expect(result.cancelled).toBeUndefined();
+    expect(result.cancellationReason).toBeUndefined();
+    expect(result.leaderId).toBeUndefined();
+    expect(result.sweeperId).toBeUndefined();
+    expect(restored.bookings).toEqual(cancelled.bookings);
+    expect(result.version).toBe(request.groupVersion + 1);
+    expect(restored.audit[0].action).toBe("restoreGroup");
+    expect(mutateDemo("restoreGroup", request, "admin")).toEqual(restored);
+    expect(() => mutateDemo("restoreGroup", payload(), "admin")).toThrow("not cancelled");
+    expect(getDemoSnapshot("admin")).toEqual(restored);
+  });
   it("records only explicit synthetic scheduler checks, including disabled no-ops", async () => {
     const { getDemoSnapshot, runDemoWeeklyAutomation } = await import("./demo-store");
     const before = getDemoSnapshot("admin");

@@ -22,6 +22,12 @@ beforeEach(() => { vi.stubEnv("CLUB_DEMO_MODE", "false"); });
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
 describe("server identity and role boundary", () => {
+  it("denies group restoration to non-admins before reaching the workbook", async () => {
+    vi.mocked(getClubMember).mockResolvedValue({ ...member, roles: "runner,leader" });
+    await expect(executeMutation({ operation: "restoreGroup", requestId: mutation.requestId,
+      runId: "w", runVersion: 1, groupId: "g", groupVersion: 1 })).rejects.toMatchObject({ status: 403 });
+    expect(mutateSheet).not.toHaveBeenCalled();
+  });
   it("verifies an admin once per location save, but checks access again on the next request", async () => {
     vi.mocked(getClubMember).mockResolvedValue({ ...member, roles: "admin" });
     const snapshot = {

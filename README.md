@@ -18,6 +18,8 @@ Available checks: `npm test`, `npm run lint`, `npm run build`. External services
 
 Admin add-member, add-location, draft-week, runner-move, trial-runner and Maps-link actions show confirmation directly below their buttons after a successful save. Failed venue saves retain the entered details for correction or retry.
 
+In Admin > Volunteers, cancelled groups within future draft or published runs have a **Restore group** button. Restoration is administrator-only, clears volunteer assignments and leaves cancelled bookings cancelled. Assign a leader again afterwards. Entire cancelled or archived runs and past groups cannot be restored. Deploy the updated `apps-script/Code.gs` as a new Apps Script deployment version before using this action on the live workbook.
+
 ## Owner confirmation required before publication
 
 The scaffold's Riverside Pavilion, Meadow Lane and Tuesday 18:30 are **editable DEMO assumptions**, not confirmed club facts. Europe/London is an explicit UK-oriented demo timezone, not a silent US timezone default. Confirm the location, IANA timezone, Tuesday start and cutoff, every configured group's name/distance/pace, and eligible leadership roles before using live data. Scheduling uses club-local dates and accounts for daylight saving; do not hard-code a UTC offset.

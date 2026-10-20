@@ -770,6 +770,42 @@ describe("Apps Script locked gateway", () => {
     expect(app.mutate({ operation: "switchGroup", groupId: "g2" })).toMatchObject({ ok: false, code: "ASSIGNMENT_EXISTS" });
     expect(app.state()).toEqual(initial);
   });
+  it("restores a cancelled group as admin without reinstating bookings or volunteers and safely replays", () => {
+    const initial = fixture();
+    initial.groups[0].cancelled = true;
+    initial.groups[0].cancellationReason = "low-interest";
+    initial.groups[0].sweeperId = "leader";
+    initial.bookings.push(booking("cancelled", "one", "g1", "cancelled"));
+    const app = harness(initial);
+    const request = { operation: "restoreGroup", email: "admin@example.org", requestId: requestId(80),
+      runId: "run", runVersion: 1, groupId: "g1", groupVersion: 1 };
+    expect(app.post(request)).toMatchObject({ ok: true, data: { status: "restored", runVersion: 2, groupVersion: 2 } });
+    const state = app.state();
+    const group = state.groups[0];
+    expect(group.cancelled).toBeUndefined();
+    expect(group.cancellationReason).toBeUndefined();
+    expect(group.leaderId).toBeUndefined();
+    expect(group.sweeperId).toBeUndefined();
+    expect(state.bookings).toEqual(initial.bookings);
+    expect(state.audit.some(entry => entry.action === "restoreGroup" && entry.actorId === "admin")).toBe(true);
+    expect(app.post(request)).toMatchObject({ ok: true, data: { status: "restored" } });
+    expect(app.state()).toEqual(state);
+  });
+  it.each(["runner", "leader", "active-group", "past", "cancelled-run", "archived-run", "stale-run", "stale-group"])(
+    "rejects restoring a group for %s without changing state", scenario => {
+      const initial = fixture();
+      initial.groups[0].cancelled = scenario !== "active-group";
+      if (scenario === "past") initial.weeks[0].startsAt = "2026-07-01T17:30:00Z";
+      if (scenario === "cancelled-run") initial.weeks[0].status = "cancelled";
+      if (scenario === "archived-run") initial.weeks[0].status = "archived";
+      const app = harness(initial);
+      const result = app.post({ operation: "restoreGroup", email: scenario === "runner" ? "one@example.org" : scenario === "leader" ? "leader@example.org" : "admin@example.org",
+        requestId: requestId(81), runId: "run", runVersion: scenario === "stale-run" ? 0 : 1,
+        groupId: "g1", groupVersion: scenario === "stale-group" ? 0 : 1 });
+      expect(result.ok).toBe(false);
+      expect(app.state()).toEqual(initial);
+    },
+  );
   it("lets an assigned leader cancel for low interest and cancels the group's bookings", () => {
     const initial = fixture();
     initial.groups[0].leaderId = "leader";

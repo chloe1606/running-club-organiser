@@ -141,7 +141,7 @@ function runWeeklyAutomation() {
 function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
   const operation = request.operation;
   const admin = actor.roles.includes("admin");
-  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "moveRunner", "addTrialRunner", "updateLocations"];
+  const adminOperations = ["createWeek", "updateWeekLocation", "updateWeekTime", "updateWeeklyAutomation", "publishRun", "cancelRun", "archiveRun", "assignLeader", "addMember", "updateMember", "moveRunner", "addTrialRunner", "updateLocations", "restoreGroup"];
   if (adminOperations.includes(operation) && !admin) fail_("FORBIDDEN", "Only administrators can perform this operation.");
   let run;
   let group;
@@ -277,7 +277,7 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
       group = snapshot.groups.find((entry) => entry.id === groupId && entry.runId === run.id);
       if (!group) fail_("NOT_FOUND", "The selected group does not belong to this run.");
       if (operation !== "leave" || request.groupId || request.groupVersion !== undefined) expectedVersion_(group, request.groupVersion);
-      if (group.cancelled && operation !== "cancelGroup") fail_("GROUP_CANCELLED", "This group is not running.");
+      if (group.cancelled && !["cancelGroup", "restoreGroup"].includes(operation)) fail_("GROUP_CANCELLED", "This group is not running.");
       touched.add(group.id);
     }
     switch (operation) {
@@ -296,6 +296,16 @@ function mutatePlatform_(snapshot, request, actor, now, groupDefinitions) {
         run.startsAt = startsAt;
         run.bookingClosesAt = new Date(close).toISOString();
         result = { startsAt, bookingClosesAt: run.bookingClosesAt };
+        break;
+      }
+      case "restoreGroup": {
+        if (!["draft", "published"].includes(run.status) || new Date(run.startsAt) <= now) fail_("RUN_CLOSED", "Only a future draft or published group can be restored.");
+        if (!group.cancelled) fail_("INVALID_GROUP_STATUS", "This group is not cancelled.");
+        delete group.cancelled;
+        delete group.cancellationReason;
+        delete group.leaderId;
+        delete group.sweeperId;
+        result = { status: "restored" };
         break;
       }
       case "cancelGroup": {

@@ -38,6 +38,28 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it("offers Restore group only for cancelled groups in future draft or published runs", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [snapshot.weeks[0]];
+    snapshot.weeks[0].status = "published";
+    snapshot.groups = snapshot.groups.filter(group => group.runId === snapshot.weeks[0].id);
+    snapshot.groups.forEach(group => { group.cancelled = false; });
+    const renderAdmin = () => renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+    snapshot.groups[0].cancelled = true;
+    expect(renderAdmin().match(/>Restore group<\/button>/g)).toHaveLength(1);
+    snapshot.weeks[0].status = "draft";
+    expect(renderAdmin()).toContain(">Restore group</button>");
+    snapshot.weeks[0].status = "cancelled";
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+    snapshot.weeks[0].status = "archived";
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+    snapshot.weeks[0].status = "published";
+    snapshot.weeks[0].startsAt = new Date(now - 1).toISOString();
+    expect(renderAdmin()).not.toContain(">Restore group</button>");
+  });
   it("separates the default venue from the Maps editor and add-location form", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(initialNow));

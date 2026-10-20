@@ -325,6 +325,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const [mapsMessage, setMapsMessage] = useState("");
   const [draftMessage, setDraftMessage] = useState("");
   const [removedLocation, setRemovedLocation] = useState("");
+  const [restoredGroup, setRestoredGroup] = useState<string>();
   const initialVenueSelection = locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "";
   const [venueSelection, setVenueSelection] = useState(initialVenueSelection);
   const [venueMapsUrl, setVenueMapsUrl] = useState(snapshot.config.locationMaps?.[initialVenueSelection] ?? "");
@@ -477,7 +478,15 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
           disabled={pending || !["draft", "published"].includes(run.status) || Date.parse(run.startsAt) <= now || g.cancelled === true}
           onChange={memberId => void mutate("assignLeader", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, memberId })}
         />
-        {g.cancelled ? <span className="hint">Not running · {g.cancellationReason === "no-leader" ? "no leader available" : "insufficient interest"}</span> : ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="admin-group-actions">
+        {g.cancelled ? <div className="admin-group-actions">
+          <span className="hint">Not running · {g.cancellationReason === "no-leader" ? "no leader available" : "insufficient interest"}</span>
+          {["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <button type="button" className="secondary" disabled={pending} onClick={() => {
+            if (window.confirm(`Restore Group ${g.number}? Cancelled bookings will not be reinstated. Assign a leader again after restoring.`)) {
+              setRestoredGroup(undefined);
+              void mutate("restoreGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version }, () => setRestoredGroup(g.id));
+            }
+          }}>Restore group</button>}
+        </div> : ["draft", "published"].includes(run.status) && Date.parse(run.startsAt) > now && <div className="admin-group-actions">
           {!g.leaderId && <button type="button" className="secondary no-leader-action" disabled={pending} onClick={() => {
             if (window.confirm(`Mark Group ${g.number} as not held because no leader is available? Existing bookings will be cancelled.`)) {
               void mutate("cancelGroup", { runId: run.id, runVersion: run.version, groupId: g.id, groupVersion: g.version, reason: "no-leader" });
@@ -489,6 +498,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
             }
           }}>Cancel · low interest</button>
         </div>}
+        {restoredGroup === g.id && !g.cancelled && <p className="notice" role="status">Group {g.number} restored. Assign a leader; cancelled bookings have not been reinstated.</p>}
       </div>)}</div>
     </section>}
     {run && <section className="panel"><details className="admin-disclosure runner-moves-disclosure" suppressHydrationWarning>
