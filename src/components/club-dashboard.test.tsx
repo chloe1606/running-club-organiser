@@ -74,13 +74,41 @@ describe("leader attendance clock", () => {
     expect(readiness()).not.toContain("await scheduled publication");
     run.status = "published";
     expect(readiness()).toContain("Ready for runners");
-    run.status = "cancelled";
-    expect(readiness()).toContain("No changes needed");
-    expect(readiness()).not.toContain('href="#run-controls"');
     run.status = "draft";
     run.bookingClosesAt = new Date(now - 1000).toISOString();
     expect(readiness()).toContain("Booking window has closed");
     expect(readiness()).not.toContain("Draft — ready to publish");
+  });
+  it.each(["2026-10-06T12:00:00Z", "2026-10-06T22:00:00Z"])("hides Admin history and keeps today's run selected at %s", (time) => {
+    const now = Date.parse(time);
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    const current = { ...snapshot.weeks[0], id: "current-run", status: "published" as const };
+    snapshot.weeks = [
+      { ...current, id: "archived-run", status: "archived" },
+      { ...current, id: "cancelled-run", status: "cancelled" },
+      current,
+      { ...current, id: "upcoming-draft", status: "draft", startsAt: "2026-10-13T18:00:00Z" },
+    ];
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    const picker = html.split('id="week"')[1].split("</select>")[0];
+    expect(picker).toContain('value="current-run"');
+    expect(picker).toContain('value="current-run" selected=""');
+    expect(picker).toContain('value="upcoming-draft"');
+    expect(picker).not.toContain('value="archived-run"');
+    expect(picker).not.toContain('value="cancelled-run"');
+    expect(html).not.toContain('id="history-week"');
+    expect(html).not.toContain('class="week-history"');
+  });
+  it("does not automatically select history when Admin has no current or upcoming runs", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(now));
+    snapshot.currentMemberId = "demo-admin";
+    snapshot.weeks = [{ ...snapshot.weeks[0], status: "archived" }];
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: now, view: "admin" }));
+    expect(html).toContain("No current or upcoming runs");
+    expect(html).not.toContain('id="history-week"');
+    expect(html).not.toContain("Run readiness");
   });
   it("offers Restore group only for cancelled groups in future draft or published runs", () => {
     const now = Date.parse("2026-10-06T12:00:00Z");
@@ -327,7 +355,9 @@ describe("leader attendance clock", () => {
     expect(html).toContain("Add member</summary>");
     snapshot.demo = false;
     const liveHtml = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow: startsAt, view: "admin" }));
-    expect(liveHtml).toContain("Import weekly leaders</summary>");
+    expect(liveHtml).toContain("Import weekly leaders</h2>");
+    expect(liveHtml).toContain('class="run-summary-columns"');
+    expect(liveHtml.indexOf('class="weekly-leader-import"')).toBeLessThan(liveHtml.indexOf('id="run-controls"'));
     expect(liveHtml).toContain("Preview import");
     expect(liveHtml).not.toContain("Existing leaders in listed groups may be replaced");
   });

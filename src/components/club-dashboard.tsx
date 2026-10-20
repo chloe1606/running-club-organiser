@@ -59,7 +59,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   const availableWeeks = view === "leader" ? leaderWeeks : sortedWeeks;
   const [selectedId, setSelectedId] = useState(
     initial.groups.find(g => g.id === groupId)?.runId ??
-    (view === "admin" ? [...initial.weeks].filter(r => ["draft", "published"].includes(r.status) && Date.parse(r.startsAt) > initialNow).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.id : undefined) ??
+    (view === "admin" ? [...initial.weeks].filter(r => ["draft", "published"].includes(r.status) && clubDate(new Date(r.startsAt), initial.config.timeZone) >= clubDate(new Date(initialNow), initial.config.timeZone)).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.id : undefined) ??
     (view === "runs" ? [...initial.weeks].filter(r => bookingIsOpen(r, new Date(initialNow))).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.id : undefined) ??
     [...(view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : initial.weeks)].filter(r => r.status === "published" && Date.parse(r.startsAt) > initialNow).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.id ??
     (view === "leader" ? weeksLedBy(initial, initial.currentMemberId) : initial.weeks).find(r => r.status === "published")?.id ??
@@ -74,12 +74,16 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
   const current = snapshot.members.find(m => m.id === snapshot.currentMemberId);
   const admin = current?.roles.includes("admin");
   const leader = current?.roles.includes("leader");
-  const effectiveSelectedId = availableWeeks.some(week => week.id === selectedId) ? selectedId : availableWeeks[0]?.id ?? "";
-  const run = availableWeeks.find(r => r.id === effectiveSelectedId);
   const runnerView = view === "runs" || view === "detail";
-  const activeWeeks = availableWeeks.filter(week => Date.parse(week.startsAt) >= now && week.status !== "archived").sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const activeWeeks = availableWeeks.filter(week => view === "admin"
+    ? ["draft", "published"].includes(week.status) && clubDate(new Date(week.startsAt), snapshot.config.timeZone) >= clubDate(new Date(now), snapshot.config.timeZone)
+    : Date.parse(week.startsAt) >= now && week.status !== "archived").sort((a, b) => a.startsAt.localeCompare(b.startsAt));
   const historicalWeeks = availableWeeks.filter(week => !activeWeeks.some(active => active.id === week.id));
-  const pickerWeeks = view === "runs" ? [...activeWeeks, ...(run && historicalWeeks.includes(run) ? [run] : [])] : availableWeeks;
+  const selectionWeeks = view === "admin" ? activeWeeks : availableWeeks;
+  const effectiveSelectedId = selectionWeeks.some(week => week.id === selectedId) ? selectedId : selectionWeeks[0]?.id ?? "";
+  const run = availableWeeks.find(r => r.id === effectiveSelectedId);
+  const pickerWeeks = view === "admin" ? activeWeeks : view === "runs" ? [...activeWeeks, ...(run && historicalWeeks.includes(run) ? [run] : [])] : availableWeeks;
+  const selectWeek = (id: string) => setSelectedId(id);
   const meetingLocation = run?.location ?? snapshot.config.location;
   const mutate: Mutate = async (operation, payload, onSuccess) => {
     if (saving.current) return;
@@ -162,7 +166,8 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
       view === "profile" ? <Profile snapshot={snapshot} now={now} /> : <>
         <section className="week-bar" aria-label="Selected week">
-          <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || (view === "leader" && !leaderWeeks.length)} value={effectiveSelectedId} onChange={e => setSelectedId(e.target.value)}>
+          <label htmlFor="week">Run week<select id="week" disabled={view === "detail" || !pickerWeeks.length} value={pickerWeeks.some(week => week.id === effectiveSelectedId) ? effectiveSelectedId : ""} onChange={e => selectWeek(e.target.value)}>
+            {view === "admin" && !pickerWeeks.some(week => week.id === effectiveSelectedId) && <option value="">{pickerWeeks.length ? "Choose a current or upcoming run" : "No current or upcoming runs"}</option>}
             {pickerWeeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt, snapshot.config.timeZone)} · {runnerView ? runnerStatus(w, now) : w.status}</option>)}
           </select></label>
           {run && <div><span className={`badge ${run.status}`}>{runnerView ? runnerStatus(run, now) : run.status}</span><p>{run.status === "published" ? `Booking ${Date.parse(run.bookingClosesAt) <= now ? "closed" : "closes"} ${dateLabel(run.bookingClosesAt, snapshot.config.timeZone)} at ${new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.bookingClosesAt))}` : "Historical and draft weeks are not open for bookings."}</p></div>}
@@ -171,7 +176,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
           <label htmlFor="history-week">Past run week<select id="history-week" value={historicalWeeks.some(week => week.id === effectiveSelectedId) ? effectiveSelectedId : ""} onChange={event => { if (event.target.value) setSelectedId(event.target.value); }}>
             <option value="">Choose a past run</option>{historicalWeeks.map(week => <option key={week.id} value={week.id}>{dateLabel(week.startsAt, snapshot.config.timeZone)} · {runnerStatus(week, now)}</option>)}
           </select></label>
-          {activeWeeks.length > 0 && <button className="secondary" onClick={() => setSelectedId(activeWeeks.find(week => bookingIsOpen(week, new Date(now)))?.id ?? activeWeeks[0].id)}>Back to upcoming run</button>}
+          {activeWeeks.length > 0 && <button className="secondary" onClick={() => selectWeek(activeWeeks.find(week => bookingIsOpen(week, new Date(now)))?.id ?? activeWeeks[0].id)}>Back to upcoming run</button>}
         </details>}
         {run?.cancellationReason && <p className="notice error"><strong>Run cancelled:</strong> {run.cancellationReason}</p>}
         {!run && <p className="notice">{view === "leader" ? "You’re not leading any run weeks yet." : "No run weeks are available yet."}</p>}
@@ -184,7 +189,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
           {groups.filter(g => g.leaderId === snapshot.currentMemberId).map(g => <LeaderGroup key={`${g.id}:${g.version}`} snapshot={snapshot} run={run} group={g} mutate={mutate} pending={pending} now={now} />)}
           {!groups.some(g => g.leaderId === snapshot.currentMemberId) && <p className="notice">You have no assigned groups for this week.</p>}
         </section>}
-        {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} selectWeek={setSelectedId} />}
+        {view === "admin" && <Admin snapshot={snapshot} run={run} groups={groups} mutate={mutate} pending={pending} now={now} selectWeek={selectWeek} />}
       </>}
     <footer className="site-footer"><strong>Better together.</strong><span>PETTS WOOD RUNNERS Tuesday Club Runs</span></footer>
   </main></SavingProvider>;
@@ -415,7 +420,9 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     });
   }
   return <div className="stack admin-dashboard">
-    <section className="panel next-tuesday-panel"><h2>{run ? `${clubDate(new Date(run.startsAt), snapshot.config.timeZone) === clubDate(new Date(now), snapshot.config.timeZone) ? "Today's run" : run.id === nextRun?.id ? "Upcoming run" : "Selected run"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Upcoming run"}</h2>
+    <section className="panel next-tuesday-panel">
+      <div className={snapshot.demo ? undefined : "run-summary-columns"}>
+      <div className="run-summary-details"><h2>{run ? `${clubDate(new Date(run.startsAt), snapshot.config.timeZone) === clubDate(new Date(now), snapshot.config.timeZone) ? "Today's run" : run.id === nextRun?.id ? "Upcoming run" : "Selected run"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Upcoming run"}</h2>
       {run && <div className="selected-run-summary">
         <p><strong>{run.location ?? snapshot.config.location}</strong> · {new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(run.startsAt))} · <span className={`badge ${run.status}`}>{run.status}</span></p>
         <ul className="readiness-checklist" aria-label="Run readiness">
@@ -433,6 +440,9 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
             bookingIsOpen(run, new Date(now)) ? "Ready for runners — bookings are open." : Date.parse(run.bookingOpensAt) > now ? "Wait for bookings to open." : "Bookings are closed; prepare for the run."}</li>
         </ul>
       </div>}
+      </div>
+      <WeeklyLeaderImport snapshot={snapshot} mutate={mutate} pending={pending} />
+      </div>
       {snapshot.weeks.some(week => week.status === "draft" && Date.parse(week.startsAt) > now) && <><h3>Upcoming drafts</h3>
       <ul className="roster">{snapshot.weeks.filter(week => week.status === "draft" && Date.parse(week.startsAt) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt)).map(week => {
         const blockers = publicationBlockers(snapshot, week, new Date(now));
@@ -442,7 +452,6 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         return <li key={week.id}><button type="button" className="secondary" aria-pressed={week.id === run?.id} onClick={() => selectWeek(week.id)}>{dateLabel(week.startsAt, snapshot.config.timeZone)}</button><span>{blockers.length ? `${due && snapshot.config.weeklyAutomationEnabled ? "Publication blocked" : "Not ready"}: ${blockers.join("; ")}` : snapshot.config.weeklyAutomationEnabled ? "Ready for scheduled publication" : "Ready; automation off"}{unled > 0 && ` · ${unled} groups without eligible leaders will be marked not running on publication.`}</span></li>;
       })}</ul></>}
       <details className="admin-disclosure advanced-controls" id="run-controls" suppressHydrationWarning><summary>Advanced Controls</summary><div className="disclosure-content">
-      <WeeklyLeaderImport snapshot={snapshot} mutate={mutate} pending={pending} />
       <details className="admin-disclosure" suppressHydrationWarning><summary>Automation and schedule · {snapshot.config.weeklyAutomationEnabled ? "On" : "Off"}</summary><div className="disclosure-content">
       <div className="automation-health" aria-label="Automation health">
       <h3>Scheduler status</h3>
@@ -492,7 +501,7 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     </div>}
       </div></details>
     </section>
-    {run && <section className="panel" id="volunteers"><h2>Volunteers</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
+    {run && <section className="panel" id="volunteers"><h2>Leaders</h2><p className="hint">Assigned leaders occupy a confirmed place in their group.</p>
       <div className="assignment-grid">{groups.map(g => <div className="admin-group-assignment" key={g.id}>
         <SearchableSelect
           label={`Group ${g.number} · ${confirmedCount(g.id, snapshot.bookings)}/${g.capacity} · Leader`}

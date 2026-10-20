@@ -102,6 +102,7 @@ p { margin: .6rem 0; }
 .admin-dashboard .automation-toggle input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--club-teal); }
 .admin-dashboard .automation-toggle span { line-height: 1.35; }
 .admin-dashboard .admin-disclosure { margin: .85rem 0; }
+.admin-dashboard .advanced-controls { border-top: 1px solid var(--line); padding-top: 1rem; }
 .admin-dashboard .admin-disclosure > summary { font-size: 1rem; font-weight: 800; }
 .admin-dashboard .admin-disclosure > .disclosure-content, .admin-dashboard .cancel-disclosure > .disclosure-content { border: 1px solid #b6d5ce; border-radius: 6px; padding: 1rem; margin-top: .75rem; }
 .admin-dashboard .disclosure-content h3, .admin-dashboard .disclosure-content .admin-disclosure > summary { font-size: .9rem; font-weight: 700; }
@@ -309,12 +310,36 @@ th { background: #edf5f2; }
 .readiness-checklist a { font-weight: 700; }
 .saving-spinner { display: inline-block; width: .9em; height: .9em; margin-right: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -.1em; animation: saving-spin .8s linear infinite; }
 @keyframes saving-spin { to { transform: rotate(360deg); } }
+.running-loader { display: grid; justify-items: center; gap: .5rem; margin-top: 15vh; padding: 1.5rem; color: var(--club-teal); text-align: center; }
+.running-loader p { margin: 0; }
+.club-sign-in > .sign-in-progress { display: none; }
+.club-sign-in:has(.cl-formButtonPrimary.cl-loading) > .sign-in-progress,
+.club-sign-in[data-signed-in="true"] > .sign-in-progress { display: block; }
+.running-loader-icon { width: 64px; height: 64px; overflow: visible; }
+.runner-body { animation: runner-bounce .2s ease-in-out infinite alternate; }
+.runner-arm { transform-origin: 34px 22px; animation: runner-arm-swing .8s ease-in-out infinite; }
+.runner-leg { transform-origin: 28px 35px; animation: runner-leg-swing .8s ease-in-out infinite; }
+.runner-arm-back, .runner-leg-front { animation-delay: -.4s; }
+@keyframes runner-bounce { to { transform: translateY(-2px); } }
+@keyframes runner-arm-swing { 0%, 100% { transform: rotate(-55deg); } 50% { transform: rotate(80deg); } }
+@keyframes runner-leg-swing { 0%, 100% { transform: rotate(-45deg); } 50% { transform: rotate(45deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .runner-body, .runner-arm, .runner-leg { animation: none; }
+  .runner-arm-front { transform: rotate(-55deg); }
+  .runner-arm-back { transform: rotate(80deg); }
+  .runner-leg-front { transform: rotate(45deg); }
+  .runner-leg-back { transform: rotate(-45deg); }
+}
 @media (prefers-reduced-motion: reduce) { .saving-spinner { animation: none; } }
 .admin-dashboard .panel { box-shadow: none; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 1.25rem 0; }
 .admin-dashboard .panel:first-child { border-top: 0; padding-top: 0; }
 .admin-dashboard h2 { font-size: 1.35rem; }
-.admin-dashboard .next-tuesday-panel > h2 { font-size: 1.75rem; }
+.admin-dashboard .next-tuesday-panel > h2 { font-size: 1.25rem; }
 .selected-run-summary { border-left: 4px solid var(--club-accent); padding-left: .85rem; margin: 1rem 0; }
+.run-summary-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 2rem; align-items: start; }
+.run-summary-columns > * { min-width: 0; }
+.weekly-leader-import { border-left: 1px solid var(--line); padding-left: 1.5rem; }
+.admin-dashboard .run-summary-details > h2, .admin-dashboard .weekly-leader-import > h2 { font-size: 1.25rem; }
 .selected-run-summary p, .automation-health p { overflow-wrap: anywhere; }
 .automation-health { border-top: 1px solid var(--line); padding-top: .85rem; margin-top: 1rem; font-size: .88rem; }
 .automation-health .notice { margin: .6rem 0; }
@@ -336,6 +361,8 @@ th { background: #edf5f2; }
 .member-editor fieldset:has(input[type="email"]) { display: grid; gap: .6rem; width: 100%; }
 
 @media (max-width: 800px) {
+	.run-summary-columns { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+	.weekly-leader-import { border-left: 0; border-top: 1px solid var(--line); padding: 1rem 0 0; }
 	h1 { max-width: 680px; font-size: 2.75rem; }
 	.club-nav { min-height: 80px; }
 	.brand-mark { width: 56px; height: 56px; }
