@@ -20,6 +20,10 @@ export async function getPlatformSnapshot(): Promise<PlatformSnapshot> {
     return visibleSnapshot(snapshot, snapshot.currentMemberId);
   }
   const identity = await getClubMember();
+  return snapshotForIdentity(identity);
+}
+
+async function snapshotForIdentity(identity: Awaited<ReturnType<typeof getClubMember>>): Promise<PlatformSnapshot> {
   const email = identity?.email;
   const data = await mutateSheet("snapshot", { email });
   const parsed = snapshotSchema.safeParse(data);
@@ -57,7 +61,7 @@ export async function executeMutation(mutation: ClubMutation): Promise<PlatformS
     if (error instanceof GatewayError && error.code === "STALE_IMPORT") throw new GatewayError(error.message, 409, error.code);
     throw error;
   }
-  return getPlatformSnapshot();
+  return snapshotForIdentity(member);
 }
 
 export async function previewWeeklyLeaderImport(): Promise<WeeklyLeaderImportPreview> {

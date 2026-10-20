@@ -82,7 +82,10 @@ p { margin: .6rem 0; }
 .inline-form, .venue-editor, .venue-add-form { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: end; min-width: 0; }
 .inline-form > *, .venue-editor > *, .venue-add-form > * { min-width: 0; }
 .inline-form button, .venue-editor button, .venue-add-form button { max-width: 100%; white-space: normal; }
-.venue-add-form { padding-top: 1.5rem; }
+.venue-editor, .venue-add-form { border-top: 1px solid var(--line); margin-top: 1.5rem; padding-top: 1.5rem; }
+.action-feedback { align-self: end; min-width: 0; }
+.action-feedback > .notice { margin: .75rem 0 0; }
+.admin-section-divider { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
 .assignment-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 1rem; margin: 1rem 0; min-width: 0; }
 .assignment-grid > label { min-width: 0; }
 .admin-dashboard, .admin-dashboard > *, .admin-dashboard .panel, .admin-dashboard form, .admin-dashboard label { min-width: 0; max-width: 100%; }

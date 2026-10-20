@@ -64,10 +64,12 @@ export function MemberOnboarding({ snapshot, mutate, pending }: {
       <p className="hint">{snapshot.demo ? "Demo only: no invitation emails will be sent." : "Active membership is saved first. Existing Clerk accounts and pending invitations are skipped."}</p>
       {duplicate && <p role="alert">A member with this email already exists.</p>}
       {error && <p role="alert">{error}</p>}
-      <button type="submit" disabled={disabled || duplicate || !selectedRoles.length || !name.trim()}>{submitting ? "Adding member..." : "Add member"}</button>
+      <div className="action-feedback">
+        <button type="submit" disabled={disabled || duplicate || !selectedRoles.length || !name.trim()}>{submitting ? "Adding member..." : "Add member"}</button>
+        {saved && <p className="notice" role={invitation?.status === "failed" ? "alert" : "status"}>Member added. {invitation?.message ?? "No invitation requested."} {invitation?.status === "failed" && "Membership is saved; retrying will not add another member."}</p>}
+        {invitation?.status === "failed" && <button type="button" disabled={disabled} onClick={() => void retryInvitation()}>{inviting ? "Checking invitation..." : "Retry invitation"}</button>}
+      </div>
     </form>
-    {saved && <p role={invitation?.status === "failed" ? "alert" : "status"}>Member added. {invitation?.message ?? "No invitation requested."} {invitation?.status === "failed" && "Membership is saved; retrying will not add another member."}</p>}
-    {invitation?.status === "failed" && <button type="button" disabled={disabled} onClick={() => void retryInvitation()}>{inviting ? "Checking invitation..." : "Retry invitation"}</button>}
     </div>
   </details>;
 }

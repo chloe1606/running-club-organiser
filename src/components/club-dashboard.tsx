@@ -321,6 +321,10 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const [memberPage, setMemberPage] = useState(0);
   const [newLocation, setNewLocation] = useState("");
   const [newLocationMapsUrl, setNewLocationMapsUrl] = useState("");
+  const [locationMessage, setLocationMessage] = useState("");
+  const [mapsMessage, setMapsMessage] = useState("");
+  const [draftMessage, setDraftMessage] = useState("");
+  const [removedLocation, setRemovedLocation] = useState("");
   const initialVenueSelection = locationOptions.includes(snapshot.config.location) ? snapshot.config.location : locationOptions[0] ?? "";
   const [venueSelection, setVenueSelection] = useState(initialVenueSelection);
   const [venueMapsUrl, setVenueMapsUrl] = useState(snapshot.config.locationMaps?.[initialVenueSelection] ?? "");
@@ -349,7 +353,13 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
   const localTimestamp = (value: string) => new Intl.DateTimeFormat("en-GB", { timeZone: snapshot.config.timeZone, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
   const lastCheck = snapshot.schedulerHealth?.lastSuccessfulCheckAt;
   const nextRun = [...snapshot.weeks].filter(week => Date.parse(week.startsAt) > now && ["draft", "published"].includes(week.status)).sort((left, right) => left.startsAt.localeCompare(right.startsAt))[0];
-  function create(e: FormEvent) { e.preventDefault(); void mutate("createWeek", { date, location: newWeekLocation, ...(copy ? { copyFromRunId: copy } : {}) }); }
+  function create(e: FormEvent) {
+    e.preventDefault();
+    setDraftMessage("");
+    void mutate("createWeek", { date, location: newWeekLocation, ...(copy ? { copyFromRunId: copy } : {}) }, () => {
+      setDraftMessage(`Draft week created for ${date}.`);
+    });
+  }
   function addLocation(e: FormEvent) {
     e.preventDefault();
     const value = newLocation.trim();
@@ -359,31 +369,40 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     const location = existing ?? value;
     const locationMaps = { ...DEFAULT_LOCATION_MAPS, ...Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locationOptions.includes(venue))) };
     if (newLocationMapsUrl.trim()) locationMaps[location] = newLocationMapsUrl.trim();
-    void mutate("updateLocations", { location, locations, locationMaps });
-    setVenueSelection(location);
-    setVenueMapsUrl(locationMaps[location] ?? "");
-    setNewWeekLocation(location);
-    setNewLocation("");
-    setNewLocationMapsUrl("");
+    setLocationMessage("");
+    void mutate("updateLocations", { location, locations, locationMaps }, () => {
+      setVenueSelection(location);
+      setVenueMapsUrl(locationMaps[location] ?? "");
+      setNewWeekLocation(location);
+      setNewLocation("");
+      setNewLocationMapsUrl("");
+      setLocationMessage(existing ? `Location "${location}" updated.` : `Location "${location}" added.`);
+    });
   }
   function saveVenueMap(e: FormEvent) {
     e.preventDefault();
     const locationMaps = { ...DEFAULT_LOCATION_MAPS, ...Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locationOptions.includes(venue))) };
     if (venueMapsUrl.trim()) locationMaps[venueSelection] = venueMapsUrl.trim();
     else delete locationMaps[venueSelection];
-    void mutate("updateLocations", { location: snapshot.config.location, locations: locationOptions, locationMaps });
+    setMapsMessage("");
+    void mutate("updateLocations", { location: snapshot.config.location, locations: locationOptions, locationMaps }, () => {
+      setMapsMessage(`Maps link ${venueMapsUrl.trim() ? "saved" : "removed"} for "${venueSelection}".`);
+    });
   }
   function removeLocation(locationToRemove: string) {
     if (locationOptions.length < 2) return;
     const locations = locationOptions.filter(location => location !== locationToRemove);
     const location = snapshot.config.location === locationToRemove ? locations[0] : snapshot.config.location;
     const locationMaps = Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locations.includes(venue)));
-    void mutate("updateLocations", { location, locations, locationMaps });
-    if (venueSelection === locationToRemove) {
-      setVenueSelection(location);
-      setVenueMapsUrl(locationMaps[location] ?? DEFAULT_LOCATION_MAPS[location] ?? "");
-    }
-    if (newWeekLocation === locationToRemove) setNewWeekLocation(location);
+    setRemovedLocation("");
+    void mutate("updateLocations", { location, locations, locationMaps }, () => {
+      if (venueSelection === locationToRemove) {
+        setVenueSelection(location);
+        setVenueMapsUrl(locationMaps[location] ?? DEFAULT_LOCATION_MAPS[location] ?? "");
+      }
+      if (newWeekLocation === locationToRemove) setNewWeekLocation(location);
+      setRemovedLocation(locationToRemove);
+    });
   }
   return <div className="stack admin-dashboard">
     <section className="panel next-tuesday-panel"><h2>{run ? `${run.id === nextRun?.id ? "Next Tuesday" : "Selected Tuesday"} · ${dateLabel(run.startsAt, snapshot.config.timeZone)}` : "Next Tuesday"}</h2>
@@ -423,7 +442,9 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <label>New Tuesday<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label>
       <label>Location for new week<select required value={newWeekLocation} disabled={!locationOptions.length} onChange={e => setNewWeekLocation(e.target.value)}>{!locationOptions.length && <option value="">Add a venue below first</option>}{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
       <label>Copy scaffold<select value={copy} onChange={e => setCopy(e.target.value)}><option value="">Configured group defaults</option>{snapshot.weeks.map(w => <option key={w.id} value={w.id}>{dateLabel(w.startsAt)}</option>)}</select></label>
-      <button disabled={pending || !locationOptions.length}>Create draft week</button>
+      <div className="action-feedback"><button disabled={pending || !locationOptions.length}>Create draft week</button>
+        {draftMessage && <p className="notice" role="status">{draftMessage}</p>}
+      </div>
     </form>{!locationOptions.length ? <p className="notice">No venues are available. Add a location in the Venue list below before creating a week.</p> : <p className="hint">No runners or volunteer assignments are copied.</p>}</div></details>
       {run && <><h3 className="subheading">Selected run overrides</h3><div className="actions">
         <button disabled={pending || run.status !== "draft"} onClick={() => void mutate("publishRun", { runId: run.id, runVersion: run.version })}>Publish selected week</button>
@@ -489,8 +510,10 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         <SearchableSelect label="Destination" value={moveGroup} placeholder="Select group"
           options={groups.map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setMoveGroup} />
-        <button disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</button>
-      </form>{moveMessage && <p className="notice" role="status">{moveMessage}</p>}<h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
+        <div className="action-feedback"><button disabled={pending || !bookingIsOpen(run, new Date(now))}>Move runner</button>
+          {moveMessage && <p className="notice" role="status">{moveMessage}</p>}
+        </div>
+      </form><hr className="admin-section-divider" /><h3 className="subheading">Add a trial runner</h3><p className="hint">No member account is created. If the group is full, they’ll join its waitlist.</p><form className="inline-form" onSubmit={e => {
         e.preventDefault(); const destination = groups.find(g => g.id === trialGroup);
         const name = trialName.trim();
         if (destination && name) {
@@ -504,8 +527,10 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
         <SearchableSelect label="Group" value={trialGroup} placeholder="Select group"
           options={groups.filter(g => !g.cancelled).map(g => ({ value: g.id, label: `Group ${g.number} · ${g.paceLabel}` }))}
           onChange={setTrialGroup} />
-        <button disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</button>
-      </form>{trialMessage && <p className="notice" role="status">{trialMessage}</p>}</div>
+        <div className="action-feedback"><button disabled={pending || !bookingIsOpen(run, new Date(now)) || !trialName.trim() || !trialGroup}>Add trial runner</button>
+          {trialMessage && <p className="notice" role="status">{trialMessage}</p>}
+        </div>
+      </form></div>
     </details></section>}
     <section className="panel attendance-panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Group popularity</summary>
@@ -556,23 +581,30 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
     <section className="panel location-settings"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Venue list</summary>
       <div className="disclosure-content"><p className="hint">Choose the default venue for new weeks and maintain a Maps link for each saved location.</p>
-      <form className="venue-editor" onSubmit={saveVenueMap}>
+      <div className="venue-default">
         <label htmlFor="club-location">Default location<select id="club-location" value={locationOptions.includes(snapshot.config.location) ? snapshot.config.location : ""} disabled={pending || !locationOptions.length} onChange={event => void mutate("updateLocations", { location: event.target.value, locations: locationOptions, locationMaps: Object.fromEntries(Object.entries(snapshot.config.locationMaps ?? {}).filter(([venue]) => locationOptions.includes(venue))) })}>
           {!locationOptions.includes(snapshot.config.location) && <option value="">Choose a saved location</option>}
           {locationOptions.map(location => <option key={location} value={location}>{location}</option>)}
         </select></label>
+      </div>
+      <form className="venue-editor" onSubmit={saveVenueMap}>
         <label htmlFor="venue-map-select">Edit Maps link for<select id="venue-map-select" value={venueSelection} disabled={pending || !locationOptions.length} onChange={event => { setVenueSelection(event.target.value); setVenueMapsUrl(snapshot.config.locationMaps?.[event.target.value] ?? ""); }}>{locationOptions.map(location => <option key={location} value={location}>{location}</option>)}</select></label>
         <label htmlFor="venue-map-url">Google Maps link<input id="venue-map-url" type="url" value={venueMapsUrl} onChange={event => setVenueMapsUrl(event.target.value)} placeholder="https://www.google.com/maps/..." /></label>
-        <button className="secondary" disabled={pending || !locationOptions.length}>Save Maps link</button>
+        <div className="action-feedback"><button className="secondary" disabled={pending || !locationOptions.length}>Save Maps link</button>
+          {mapsMessage && <p className="notice" role="status">{mapsMessage}</p>}
+        </div>
       </form>
       <form className="venue-add-form" onSubmit={addLocation}>
         <label htmlFor="new-location">Add location<input id="new-location" value={newLocation} maxLength={120} onChange={event => setNewLocation(event.target.value)} placeholder="Venue name or address" /></label>
         <label htmlFor="new-location-map">Google Maps link<input id="new-location-map" type="url" value={newLocationMapsUrl} onChange={event => setNewLocationMapsUrl(event.target.value)} placeholder="https://www.google.com/maps/..." /></label>
-        <button disabled={pending || !newLocation.trim()}>Add location</button>
+        <div className="action-feedback"><button disabled={pending || !newLocation.trim()}>Add location</button>
+          {locationMessage && <p className="notice" role="status">{locationMessage}</p>}
+        </div>
       </form>
       <ul className="venue-list" aria-label="Saved venues">{locationOptions.map(location => <li key={location}>
         <span>{location}</span><button type="button" className="secondary" disabled={pending || locationOptions.length < 2} onClick={() => removeLocation(location)}>Remove</button>
       </li>)}</ul>
+      {removedLocation && <p className="notice" role="status">Location &quot;{removedLocation}&quot; removed.</p>}
       </div>
     </details>
     </section>

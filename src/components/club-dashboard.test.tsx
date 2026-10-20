@@ -38,6 +38,28 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it("separates the default venue from the Maps editor and add-location form", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    const mapsForm = html.split('<form class="venue-editor">')[1]?.split("</form>")[0];
+    expect(mapsForm).toContain("Edit Maps link for");
+    expect(mapsForm).toContain("Google Maps link");
+    expect(mapsForm).toContain("Save Maps link");
+    expect(mapsForm).not.toContain("Default location");
+    expect(html).toContain('<div class="venue-default"><label for="club-location">Default location');
+  });
+  it("keeps admin add and save buttons in local feedback containers", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    for (const label of ["Add location", "Save Maps link", "Create draft week", "Move runner", "Add trial runner", "Add member"]) {
+      expect(html).toMatch(new RegExp(`<div class="action-feedback"><button[^>]*>${label}</button>`));
+    }
+    expect(html).not.toContain('class="notice" role="status"');
+  });
   it("shows Add member in its own panel before the searchable club members panel", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(initialNow));

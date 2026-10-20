@@ -16,6 +16,8 @@ The preview has 13 groups with varied occupancy and waitlists plus roughly 12 hi
 
 Available checks: `npm test`, `npm run lint`, `npm run build`. External services are mocked in automated tests; passing them does not verify Clerk email delivery, Apps Script permissions or a real workbook.
 
+Admin add-member, add-location, draft-week, runner-move, trial-runner and Maps-link actions show confirmation directly below their buttons after a successful save. Failed venue saves retain the entered details for correction or retry.
+
 ## Owner confirmation required before publication
 
 The scaffold's Riverside Pavilion, Meadow Lane and Tuesday 18:30 are **editable DEMO assumptions**, not confirmed club facts. Europe/London is an explicit UK-oriented demo timezone, not a silent US timezone default. Confirm the location, IANA timezone, Tuesday start and cutoff, every configured group's name/distance/pace, and eligible leadership roles before using live data. Scheduling uses club-local dates and accounts for daylight saving; do not hard-code a UTC offset.
@@ -40,6 +42,8 @@ Clerk's built-in Frontend API proxy is enabled at `/__clerk`, including its stat
 Existing member IDs, bookings, attendance and roles remain in Sheets unchanged. There are no existing password hashes to import. Previous NextAuth sessions and magic links are not accepted; every member must set up Clerk credentials. Legacy `/auth/signin` and `/auth/check-inbox` links redirect to Clerk sign-in; the old NextAuth API endpoints have been removed.
 
 Only trusted active membership supplies roles. Protected pages/data and mutations recheck membership, including after an account is deactivated. Roster APIs expose display names, not other members' email addresses; personal attendance/history is limited to its owner except assigned leaders' rosters and administrators' operational access. Clerk credentials, sessions, tokens and the gateway secret are never returned in club snapshots. The public runs page remains available without login; explicit demo mode bypasses Clerk and never touches the live workbook.
+
+Mutation responses reuse the identity verified earlier in the same save request when refreshing the snapshot, avoiding a duplicate Clerk user and membership lookup. The refreshed workbook still determines active membership, roles and visibility. Identity is not cached between requests.
 
 ## Server configuration and Apps Script deployment
 
