@@ -10,7 +10,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-For a populated preview set `CLUB_DEMO_MODE=true`. Demo personas, names, bookings and attendance are synthetic, use reserved `example.com` emails, and never authenticate against or mutate the live workbook. Demo state is intentionally process-local and resets on restart; it is not production persistence. Use a separate preview deployment, **never enable this flag on the live member application**. Live configuration or authentication errors do not fall back to demo data.
+For a populated preview set `CLUB_DEMO_MODE=true`. Demo personas, names, bookings and attendance are synthetic, use reserved `example.com` emails, and never authenticate against or mutate the live workbook. The demo role selector includes a signed-out public view that shows run information without runner rosters. Demo state is intentionally process-local and resets on restart; it is not production persistence. Use a separate preview deployment, **never enable this flag on the live member application**. Live configuration or authentication errors do not fall back to demo data.
 
 The preview has 13 groups with varied occupancy and waitlists plus roughly 12 historical weeks. Its current week is relative to the upcoming Tuesday, not a fixed expired date. Runner view opens the current bookable week first, tucks past runs into a disclosure and selector, and labels public status Bookings open, Bookings closed or Cancelled. Own bookings are prominent; a waitlist place is explicitly not confirmed.
 

@@ -48,7 +48,7 @@ describe("runner group UI", () => {
     expect(card).toContain("Runners &amp; Waitlist");
     expect(card).toContain("Runners · 19");
     expect(card).toContain("Waitlist · 4");
-    expect(card).toContain("Jamie Brooks");
+    expect(card).toContain("Aisha Ahmed");
     expect(card).not.toContain("Route, runners &amp; waitlist");
   });
   it("shows trial names in the signed-in roster preview", () => {
@@ -96,6 +96,8 @@ describe("runner group UI", () => {
     expect(html).not.toContain("runner-roster-panel");
     expect(html).not.toContain("runner-roster");
     expect(html).not.toContain("Runners &amp; Waitlist");
+    expect(html).not.toContain("Route ·");
+    expect(html).not.toContain("route-summary");
     expect(html).not.toContain("Sign in to book");
     expect(html).not.toContain("Sign in to view");
     expect(html).not.toContain("Route, runners &amp; waitlist");

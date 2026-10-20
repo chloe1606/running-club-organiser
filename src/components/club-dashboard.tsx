@@ -139,8 +139,8 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     </nav>
     {snapshot.demo && <aside className="demo-banner" aria-label="Demo mode">
       <div><strong>Interactive demo</strong> · Synthetic members and attendance. Changes are process-local and reset on restart. Location, time and distances are demonstration scaffolding, not club facts.</div>
-      <label>Try a role <select disabled={pending} value={admin ? "admin" : leader ? "leader" : "runner"} onChange={e => void changePersona(e.target.value)}>
-        <option value="runner">Runner</option><option value="leader">Leader</option><option value="admin">Administrator</option>
+      <label>View as <select disabled={pending} value={!snapshot.currentMemberId ? "signed-out" : admin ? "admin" : leader ? "leader" : "runner"} onChange={e => void changePersona(e.target.value)}>
+        <option value="signed-out">Signed out</option><option value="runner">Runner</option><option value="leader">Leader</option><option value="admin">Administrator</option>
       </select></label>
     </aside>}
     {!snapshot.demo && snapshot.config.demoConfiguration && <p className="notice">Meeting settings are unconfirmed demonstration scaffolding. An administrator must set the club’s agreed location, start time and distances in the workbook before relying on them.</p>}
@@ -154,7 +154,7 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
     </header>
     {message && <p className={failure ? "notice error" : "notice"} role={failure ? "alert" : "status"}>{message}</p>}
     {retry && <p><button disabled={pending} className="secondary" onClick={() => void mutate(retry.operation, retry.payload)}>Retry last save safely</button></p>}
-    {(view !== "runs" && !snapshot.currentMemberId) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/auth/signin">Sign in</Link></section> :
+    {(view !== "runs" && !snapshot.currentMemberId && !(snapshot.demo && view === "detail")) ? <section className="panel"><h2>Members only</h2><p>Sign in to see your club workspace.</p><Link className="button" href="/auth/signin">Sign in</Link></section> :
       view === "admin" && !admin ? <p className="notice">Administrator access is required.</p> :
       view === "leader" && !leader && !admin ? <p className="notice">Leader access is required.</p> :
       view === "profile" ? <Profile snapshot={snapshot} now={now} /> : <>
@@ -193,14 +193,14 @@ function GroupDetail({ snapshot, run, group }: { snapshot: PlatformSnapshot; run
   return <section className="panel">
     <Link href="/">← All pace groups</Link><h2>Group {group.number} · {group.name}</h2>
     <p>{group.paceLabel} · {group.distanceLabel ?? "Distance to be confirmed"}</p>
-    <p><strong>Leader:</strong> {memberName(snapshot, group.leaderId)} · <strong>Sweeper:</strong> {memberName(snapshot, group.sweeperId)}</p>
-    <h3>Route</h3><p className="route">{group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "Route not yet provided."}</p>
-    <h3>Confirmed runners · {confirmed.length}/{group.capacity}</h3>
-    <ul className="roster">{confirmed.map(b => <li key={b.id}>{bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>
+    {snapshot.currentMemberId && <p><strong>Leader:</strong> {memberName(snapshot, group.leaderId)} · <strong>Sweeper:</strong> {memberName(snapshot, group.sweeperId)}</p>}
+    {snapshot.currentMemberId && <><h3>Route</h3><p className="route">{group.routeDescription ? <RouteDescription text={group.routeDescription} /> : "Route not yet provided."}</p></>}
+    <h3>{snapshot.currentMemberId ? `Confirmed runners · ${confirmed.length}/${group.capacity}` : `Confirmed places · ${confirmed.length}/${group.capacity}`}</h3>
+    {snapshot.currentMemberId && <ul className="roster">{confirmed.map(b => <li key={b.id}>{bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}{b.source === "assignment" && " · assigned volunteer"}</li>)}</ul>}
     <h3>Waitlist · {queue.length}</h3>
     <p>When a place opens while bookings are open, the first eligible queued runner is promoted automatically. No promotions happen at or after the cutoff. A queue place is not a confirmed booking.</p>
-    <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}</li>)}</ol>
-    {!queue.length && <p>No one waiting.</p>}
+    {snapshot.currentMemberId && <ol className="roster queue">{queue.map((b, i) => <li key={b.id}>#{i + 1} · {bookingName(snapshot, b)}{b.source === "trial" ? " · trial" : b.memberId === snapshot.currentMemberId ? " (you)" : ""}</li>)}</ol>}
+    {snapshot.currentMemberId && !queue.length && <p>No one waiting.</p>}
     <p className="hint">{dateLabel(run.startsAt)} · Attendance is recorded by your assigned leader, not inferred from booking.</p>
   </section>;
 }

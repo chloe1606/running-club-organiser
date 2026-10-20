@@ -2,6 +2,7 @@ import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDemoSnapshot } from "../lib/demo-data";
+import { visibleSnapshot } from "../lib/privacy";
 import { bookingName, ClubDashboard, runnerStatus } from "./club-dashboard";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
@@ -226,6 +227,25 @@ describe("leader attendance clock", () => {
     expect(liveHtml).toContain("Import weekly leaders</summary>");
     expect(liveHtml).toContain("Preview import");
     expect(liveHtml).not.toContain("Existing leaders in listed groups may be replaced");
+  });
+  it("offers a signed-out demo view with run details but no runner names or rosters", () => {
+    const snapshot = createDemoSnapshot(new Date("2026-10-06T12:00:00Z"));
+    const group = snapshot.groups.find(candidate => candidate.runId === snapshot.weeks[0].id)!;
+    const privateName = snapshot.members.find(member => snapshot.bookings.some(booking =>
+      booking.groupId === group.id && booking.memberId === member.id))!.name;
+    const publicSnapshot = visibleSnapshot(snapshot);
+    const html = renderToStaticMarkup(createElement(ClubDashboard, {
+      initial: publicSnapshot, initialNow: startsAt, view: "detail", groupId: group.id,
+    }));
+    expect(html).toContain("View as");
+    expect(html).toContain('<option value="signed-out" selected="">Signed out</option>');
+    expect(html).toContain("Confirmed places");
+    expect(html).not.toContain(privateName);
+    expect(html).not.toContain("Runners &amp; Waitlist");
+    expect(html).not.toContain('class="roster');
+    expect(html).not.toContain("<strong>Leader:</strong>");
+    expect(html).not.toContain("<h3>Route</h3>");
+    expect(html).not.toContain("Riverside loop via the footbridge");
   });
   it("renders identical initial HTML despite different server and browser wall clocks", () => {
     vi.setSystemTime(new Date(startsAt - 60_000));

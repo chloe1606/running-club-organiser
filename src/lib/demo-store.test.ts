@@ -131,6 +131,8 @@ describe("isolated explicit demo", () => {
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
     expect(snapshot.members.every(m => m.email.endsWith("@example.test"))).toBe(true);
     expect(new Set(snapshot.members.map(member => member.name)).size).toBe(snapshot.members.length);
+    expect(new Set(snapshot.members.slice(3).map(member => member.name.split(" ")[0])).size).toBe(40);
+    expect(new Set(snapshot.members.slice(3).map(member => member.name.split(" ")[1])).size).toBe(40);
     expect(snapshot.members.every(member => !/\s\d+$/.test(member.name))).toBe(true);
     expect(new Set(snapshot.groups.slice(0, 13).map(g => confirmedCount(g.id, snapshot.bookings))).size).toBeGreaterThan(5);
     expect(snapshot.groups.every(g => confirmedCount(g.id, snapshot.bookings) <= g.capacity)).toBe(true);
@@ -151,6 +153,13 @@ describe("isolated explicit demo", () => {
     runner.groups[0].capacity = 1;
     expect(getDemoSnapshot().groups[0].capacity).toBe(19);
     expect(() => getDemoSnapshot("unknown")).toThrow("persona");
+  });
+  it("supports a signed-out public persona without allowing demo mutations", async () => {
+    const { getDemoSnapshot, mutateDemo } = await setup();
+    const publicView = getDemoSnapshot("signed-out");
+    expect(publicView.currentMemberId).toBeUndefined();
+    expect(publicView.members.every(member => member.email === "")).toBe(true);
+    expect(() => mutateDemo("book", { requestId: randomUUID() }, "signed-out")).toThrow("Sign in");
   });
   it("waitlists full groups, rejects duplicate bookings and calculates queue position", async () => {
     const { mutateDemo, payload, group } = await setup();

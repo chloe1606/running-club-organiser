@@ -9,8 +9,8 @@ export const demoPersonas = {
   admin: "demo-admin",
 } as const;
 
-const demoFirstNames = ["Jamie", "Taylor", "Robin", "Casey", "Jordan", "Charlie", "Avery", "Cameron", "Dana", "Ellis", "Finley", "Harper", "Jesse", "Kai", "Logan", "Micah", "Noor", "Parker", "Quinn", "Riley"];
-const demoLastNames = ["Brooks", "Patel", "Woods", "Clarke", "Reed", "Bennett", "Carter", "Diaz", "Evans", "Foster", "Green", "Hughes", "Ibrahim", "James", "Kim", "Lewis", "Morris", "Nguyen", "Ortiz", "Price"];
+const demoFirstNames = ["Aisha", "Amara", "Anika", "Arjun", "Beatriz", "Ben", "Callum", "Carmen", "Daniel", "Euan", "Fatima", "Felix", "Grace", "Hana", "Idris", "Imogen", "Isla", "Javier", "Kaito", "Leila", "Luca", "Maya", "Mateo", "Nia", "Oscar", "Priyanka", "Rafael", "Sana", "Sofia", "Theo", "Uma", "Yara", "Zain", "Zoe", "Ellis", "Noor", "Riley", "Casey", "Jordan", "Harper"];
+const demoLastNames = ["Ahmed", "Ali", "Baker", "Bell", "Campbell", "Chen", "Clarke", "Costa", "Davies", "Evans", "Foster", "Garcia", "Gomez", "Hughes", "Ibrahim", "Jones", "Khan", "Kim", "Lewis", "Martin", "McKenzie", "Morgan", "Murphy", "Okafor", "Osei", "Patel", "Reed", "Shah", "Singh", "Taylor", "Thomas", "Walker", "White", "Williams", "Wong", "Wright", "Young", "Zhang", "Brooks", "Diaz"];
 
 /** Synthetic, reserved-example data. Never a fallback for a live storage failure. */
 export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
@@ -20,7 +20,7 @@ export function createDemoSnapshot(now = new Date()): PlatformSnapshot {
     { id: demoPersonas.leader, name: "Priya Shah", email: "priya@example.test", roles: ["runner", "leader"], active: true, version: 1 },
     { id: demoPersonas.admin, name: "Sam Rivers", email: "sam@example.test", roles: ["runner", "leader", "admin"], active: true, version: 1 },
     ...Array.from({ length: 400 }, (_, i) => ({
-      id: `demo-member-${i + 1}`, name: `${demoFirstNames[Math.floor(i / demoLastNames.length)]} ${demoLastNames[i % demoLastNames.length]}`,
+      id: `demo-member-${i + 1}`, name: `${demoFirstNames[i % demoFirstNames.length]} ${demoLastNames[(Math.floor(i / demoFirstNames.length) + (i % demoFirstNames.length) * 7) % demoLastNames.length]}`,
       email: `runner${i + 1}@example.test`, roles: i < 11 ? ["runner", "leader"] : i >= 27 && i <= 40 ? ["runner", "sweeper"] : ["runner"], active: true, version: 1,
     })),
   ];
