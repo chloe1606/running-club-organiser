@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Booking, Group, Run } from "@/lib/domain";
 import { bookingIsOpen, confirmedCount } from "@/lib/domain";
-import type { ClubMember, PlatformSnapshot } from "@/lib/platform-types";
+import type { ClubMember, MemberInvitationResult, PlatformSnapshot } from "@/lib/platform-types";
 import { bookingPopularity, queuePosition, waitlistAnalytics, weeksLedBy } from "@/lib/analytics";
 import { BookingGroups } from "./booking-groups";
 import { CancelRun } from "./cancel-run";
@@ -19,7 +19,7 @@ import { WeeklyLeaderImport } from "./weekly-leader-import";
 import { canAssignLeaderToGroup } from "@/lib/leader-availability";
 import { clubDate, clubDateTime, nextTuesdayDate, publicationBlockers, sundayPublicationAt, updateRunTime } from "@/lib/schedule";
 
-export type Mutate = (operation: string, payload: Record<string, unknown>, onSuccess?: () => void) => Promise<void>;
+export type Mutate = (operation: string, payload: Record<string, unknown>, onSuccess?: (invitation?: MemberInvitationResult) => void) => Promise<void>;
 export function dateLabel(value: string, timeZone = "Europe/London") {
   return new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(new Date(value));
 }
@@ -97,8 +97,8 @@ export function ClubDashboard({ initial, initialNow, view = "runs", groupId }: {
       if (!response.ok || !body.data) throw new Error(body.message ?? body.error ?? "The change could not be saved.");
       uncertainRequests.current.delete(intent); setRetry(undefined);
       setSnapshot(body.data);
-      setMessage("Saved. Your club data is up to date.");
-      onSuccess?.();
+      setMessage(body.invitation ? "Member saved. See the invitation result in Add member." : "Saved. Your club data is up to date.");
+      onSuccess?.(body.invitation);
     } catch (error) {
       const uncertain = uncertainRequests.current.has(intent);
       setRetry(uncertain ? request : undefined);
@@ -533,9 +533,12 @@ function Admin({ snapshot, run, groups, mutate, pending, now, selectWeek }: { sn
       <p className="hint">Recorded published/archived-week events only; draft and cancelled weeks are excluded. Promotion rate = promotions ÷ waitlist joins (not confirmed bookings). Peak is the maximum recorded individual-group queue, not an aggregate of all queues or today’s queue; unavailable history is never inferred.</p>
       </div>
     </details></section>
+    <section className="panel member-onboarding-panel">
+      <MemberOnboarding snapshot={snapshot} mutate={mutate} pending={pending} />
+    </section>
     <section className="panel"><details className="admin-disclosure" suppressHydrationWarning>
       <summary>Club members</summary>
-      <div className="disclosure-content"><MemberOnboarding snapshot={snapshot} mutate={mutate} pending={pending} /><label>Search members<input type="search" value={search} onChange={e => { setSearch(e.target.value); setMemberPage(0); }} placeholder="Name or email" /></label>
+      <div className="disclosure-content"><label>Search members<input type="search" value={search} onChange={e => { setSearch(e.target.value); setMemberPage(0); }} placeholder="Name or email" /></label>
         <p className="hint" role="status">{filteredMembers.length ? `Showing ${currentMemberPage * memberPageSize + 1}–${Math.min((currentMemberPage + 1) * memberPageSize, filteredMembers.length)} of ${filteredMembers.length} members` : "No members match this search."}</p>
         <div className="member-list">{visibleMembers.map(m => <MemberEditor key={`${m.id}:${m.version}`} member={m} mutate={mutate} pending={pending} />)}</div>
         {filteredMembers.length > memberPageSize && <nav className="member-pagination" aria-label="Member pages">

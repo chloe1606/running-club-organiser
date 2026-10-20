@@ -38,6 +38,17 @@ function render(initialNow: number) {
 }
 
 describe("leader attendance clock", () => {
+  it("shows Add member in its own panel before the searchable club members panel", () => {
+    const initialNow = Date.parse("2026-10-06T12:00:00Z");
+    const snapshot = createDemoSnapshot(new Date(initialNow));
+    snapshot.currentMemberId = "demo-admin";
+    const html = renderToStaticMarkup(createElement(ClubDashboard, { initial: snapshot, initialNow, view: "admin" }));
+    const addPanel = html.slice(html.indexOf('<section class="panel member-onboarding-panel">')).split("</section>")[0];
+    expect(addPanel).toContain("<summary>Add member</summary>");
+    expect(addPanel).not.toContain("Search members");
+    expect(html).toMatch(/<\/section><section class="panel"><details[^>]*><summary>Club members<\/summary>/);
+    expect(html.indexOf("<summary>Add member</summary>")).toBeLessThan(html.indexOf("<summary>Club members</summary>"));
+  });
   it("offers admins a name-only trial runner booking without member details", () => {
     const initialNow = Date.parse("2026-10-06T12:00:00Z");
     const snapshot = createDemoSnapshot(new Date(initialNow));
